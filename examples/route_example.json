@@ -1,0 +1,16 @@
+{
+  "id": "example-yellow-01",
+  "color": "yellow",
+  "grade": "V2",
+  "wall_angle_deg": 15.0,
+  "holds": [
+    {"id": "f1", "x": 0.90, "y": 0.30, "radius": 0.06, "color": "yellow", "hold_type": "foothold"},
+    {"id": "f2", "x": 1.40, "y": 0.40, "radius": 0.06, "color": "yellow", "hold_type": "foothold"},
+    {"id": "h1", "x": 1.10, "y": 1.50, "radius": 0.08, "color": "yellow", "hold_type": "jug"},
+    {"id": "h2", "x": 1.60, "y": 1.90, "radius": 0.07, "color": "yellow", "hold_type": "crimp"},
+    {"id": "h3", "x": 1.00, "y": 2.40, "radius": 0.09, "color": "yellow", "hold_type": "sloper"},
+    {"id": "h4", "x": 1.50, "y": 3.10, "radius": 0.08, "color": "yellow", "hold_type": "jug"}
+  ],
+  "start_hold_ids": ["h1"],
+  "top_hold_id": "h4"
+}
