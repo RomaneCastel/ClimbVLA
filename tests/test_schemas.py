@@ -16,6 +16,7 @@ from climbvla.schemas import (
     Move,
     PoseFrame,
     Route,
+    Trajectory,
     WallTarget,
 )
 
@@ -298,3 +299,99 @@ def test_move_rejects_bad_input(overrides, message):
     data.update(overrides)
     with pytest.raises(ValidationError, match=message):
         Move(**data)
+
+
+# ---------- Trajectory ----------
+
+
+def make_trajectory_data() -> dict:
+    """A tiny valid climb of the example route, 0 to 2 s.
+
+    Right hand on h1 from the start. Left foot stands on the ground, then
+    moves up to foothold f1 between 0.5 s and 1.0 s.
+    """
+    return {
+        "route_id": "example-yellow-01",
+        "source": "user",
+        "frames": [make_pose_data(frame_index=i, t=i * 0.5) for i in range(5)],
+        "contacts": [
+            {"body_part": "right_hand", "target": on("h1"), "t_start": 0.0},
+            {"body_part": "left_foot", "target": GROUND, "t_start": 0.0, "t_end": 0.5},
+            {"body_part": "left_foot", "target": on("f1"), "t_start": 1.0},
+        ],
+        "moves": [
+            {"body_part": "left_foot", "from_target": GROUND, "to_target": on("f1"),
+             "t_start": 0.5, "t_end": 1.0},
+        ],
+    }
+
+
+def test_trajectory_round_trip():
+    traj = Trajectory.model_validate(make_trajectory_data())
+    assert Trajectory.model_validate_json(traj.model_dump_json()) == traj
+    assert (traj.start_time, traj.end_time) == (0.0, 2.0)
+
+
+def test_contacts_at_gives_supports_during_a_move():
+    traj = Trajectory.model_validate(make_trajectory_data())
+    # at 0.7 s the left foot is in the air: only the right hand touches
+    assert [c.body_part for c in traj.contacts_at(0.7)] == [BodyPart.RIGHT_HAND]
+    assert len(traj.contacts_at(1.5)) == 2
+
+
+def test_trajectory_fits_example_route(route):
+    Trajectory.model_validate(make_trajectory_data()).check_against_route(route)
+
+
+def test_trajectory_with_unknown_hold_does_not_fit_route(route):
+    data = make_trajectory_data()
+    data["contacts"][0]["target"] = on("h99")
+    traj = Trajectory.model_validate(data)  # fine on its own...
+    with pytest.raises(ValueError, match="h99"):  # ...but not on this route
+        traj.check_against_route(route)
+
+
+def test_trajectory_for_another_route_does_not_fit(route):
+    data = make_trajectory_data()
+    data["route_id"] = "other-route"
+    with pytest.raises(ValueError, match="not 'example-yellow-01'"):
+        Trajectory.model_validate(data).check_against_route(route)
+
+
+def _frames_out_of_order(d):
+    d["frames"][2], d["frames"][3] = d["frames"][3], d["frames"][2]
+
+
+def _contact_after_end(d):
+    d["contacts"][0]["t_start"] = 5.0
+
+
+def _overlapping_contacts(d):
+    d["contacts"][1]["t_end"] = 1.2  # still on the ground when it lands on f1 at 1.0
+
+
+def _move_without_landing(d):
+    d["contacts"][2]["t_start"] = 1.5  # move lands at 1.0 but contact starts at 1.5
+
+
+def _move_without_leaving(d):
+    d["moves"][0]["from_target"] = on("f2")  # it never stood on f2
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (_frames_out_of_order, "increasing order"),
+        (_contact_after_end, "outside the climb"),
+        (_overlapping_contacts, "overlapping contacts"),
+        (_move_without_landing, "no contact starts"),
+        (_move_without_leaving, "no contact ends"),
+        (lambda d: d.update(frames=[]), "at least 1 item"),
+        (lambda d: d.update(source="dream"), "Input should be"),
+    ],
+)
+def test_trajectory_rejects_inconsistent_data(change, message):
+    data = make_trajectory_data()
+    change(data)
+    with pytest.raises(ValidationError, match=message):
+        Trajectory.model_validate(data)

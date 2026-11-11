@@ -307,3 +307,122 @@ class Move(BaseModel):
     @property
     def duration(self) -> float:
         return self.t_end - self.t_start
+
+
+class TrajectorySource(StrEnum):
+    USER = "user"  # tracked from the user's video
+    REFERENCE = "reference"  # produced by the planner and the simulation
+
+
+# Two times closer than this are the same instant (float rounding).
+TIME_TOLERANCE = 1e-6
+
+
+class Trajectory(BaseModel):
+    """One whole climb of one route: the skeleton over time, contacts and moves.
+
+    The same model holds the user's climb and the simulated reference, so the
+    scorer can compare them directly.
+
+    The route is not copied in here, only its id: it lives in its own file.
+    Checks that need the route are in check_against_route().
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: str = Field(min_length=1)
+    source: TrajectorySource
+    frames: list[PoseFrame] = Field(min_length=1)
+    contacts: list[ContactEvent] = Field(default_factory=list)
+    moves: list[Move] = Field(default_factory=list)
+
+    # ----- checks that need only this trajectory -----
+
+    @model_validator(mode="after")
+    def check_consistency(self) -> Self:
+        self._check_frames_in_order()
+        self._check_times_inside_climb()
+        self._check_no_overlapping_contacts()
+        self._check_moves_link_contacts()
+        return self
+
+    def _check_frames_in_order(self) -> None:
+        for prev, cur in zip(self.frames, self.frames[1:]):
+            if cur.frame_index <= prev.frame_index or cur.t <= prev.t:
+                raise ValueError(
+                    f"frames must be in increasing order: frame {cur.frame_index} "
+                    f"(t={cur.t}) comes after frame {prev.frame_index} (t={prev.t})"
+                )
+
+    def _check_times_inside_climb(self) -> None:
+        first, last = self.start_time - TIME_TOLERANCE, self.end_time + TIME_TOLERANCE
+        events = [*self.contacts, *self.moves]
+        for e in events:
+            for t in (e.t_start, e.t_end):
+                if t is not None and not first <= t <= last:
+                    raise ValueError(
+                        f"time {t} is outside the climb [{self.start_time}, {self.end_time}]: {e}"
+                    )
+
+    def _check_no_overlapping_contacts(self) -> None:
+        """A body part cannot be in two places at once."""
+        for part in BodyPart:
+            mine = sorted(self.contacts_of(part), key=lambda c: c.t_start)
+            for prev, cur in zip(mine, mine[1:]):
+                if prev.t_end is None or prev.t_end > cur.t_start + TIME_TOLERANCE:
+                    raise ValueError(
+                        f"{part} has overlapping contacts: {prev.target} and {cur.target}"
+                    )
+
+    def _check_moves_link_contacts(self) -> None:
+        """Each move leaves a contact that ends at t_start and lands on one starting at t_end."""
+        for move in self.moves:
+            leaves = self._find_contact(move.body_part, move.from_target, end=move.t_start)
+            lands = self._find_contact(move.body_part, move.to_target, start=move.t_end)
+            if leaves is None:
+                raise ValueError(f"no contact ends at t={move.t_start} for move {move}")
+            if lands is None:
+                raise ValueError(f"no contact starts at t={move.t_end} for move {move}")
+
+    def _find_contact(
+        self, part: BodyPart, target: Target, start: float | None = None, end: float | None = None
+    ) -> ContactEvent | None:
+        for c in self.contacts_of(part):
+            if c.target != target:
+                continue
+            if start is not None and abs(c.t_start - start) > TIME_TOLERANCE:
+                continue
+            if end is not None and (c.t_end is None or abs(c.t_end - end) > TIME_TOLERANCE):
+                continue
+            return c
+        return None
+
+    # ----- checks that need the route -----
+
+    def check_against_route(self, route: Route) -> None:
+        """Raise ValueError if this trajectory does not fit the given route."""
+        if route.id != self.route_id:
+            raise ValueError(f"trajectory is for route {self.route_id!r}, not {route.id!r}")
+        known = {h.id for h in route.holds}
+        targets = [c.target for c in self.contacts]
+        targets += [t for m in self.moves for t in (m.from_target, m.to_target)]
+        unknown = sorted({t.hold_id for t in targets if isinstance(t, HoldTarget)} - known)
+        if unknown:
+            raise ValueError(f"hold ids not in route {route.id!r}: {unknown}")
+
+    # ----- helpers -----
+
+    @property
+    def start_time(self) -> float:
+        return self.frames[0].t
+
+    @property
+    def end_time(self) -> float:
+        return self.frames[-1].t
+
+    def contacts_of(self, part: BodyPart) -> list[ContactEvent]:
+        return [c for c in self.contacts if c.body_part == part]
+
+    def contacts_at(self, t: float) -> list[ContactEvent]:
+        """Everything touching at time t: the supports during a move, for example."""
+        return [c for c in self.contacts if c.is_active(t)]
