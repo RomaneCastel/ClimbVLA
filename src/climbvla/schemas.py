@@ -426,3 +426,86 @@ class Trajectory(BaseModel):
     def contacts_at(self, t: float) -> list[ContactEvent]:
         """Everything touching at time t: the supports during a move, for example."""
         return [c for c in self.contacts if c.is_active(t)]
+
+
+# ---------- Scoring result ----------
+#
+# The metrics are still being designed, so they are stored
+# as name -> value dictionaries for now, e.g. {"hesitation_s": 1.2}. Once the
+# list settles, the important ones can become typed fields.
+
+Metrics = dict[str, float]
+
+
+class MoveAudit(BaseModel):
+    """The comparison for one of the user's moves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_move: int = Field(ge=0, description="Index into the user trajectory's moves.")
+    reference_move: int | None = Field(
+        ge=0,
+        description="Index of the matching reference move, or None if the reference has none.",
+    )
+    score: float = Field(ge=0.0, le=100.0, description="This move's score, 0 to 100.")
+    user_metrics: Metrics = Field(default_factory=dict)
+    reference_metrics: Metrics = Field(default_factory=dict)
+    feedback: str | None = Field(
+        default=None, description="Written coaching for this move, added in Step 10."
+    )
+
+
+class Audit(BaseModel):
+    """The result of comparing a user climb with the reference climb of the same route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: str = Field(min_length=1)
+    beta_score: float = Field(ge=0.0, le=100.0)
+    components: dict[str, float] = Field(
+        default_factory=dict,
+        description="The parts the Beta Score is mixed from, each 0 to 1, "
+        "e.g. {'sequence_agreement': 0.8, 'motion_similarity': 0.6}.",
+    )
+    climb_metrics: Metrics = Field(
+        default_factory=dict, description="Whole-climb metrics of the user's climb."
+    )
+    moves: list[MoveAudit] = Field(default_factory=list)
+    missed_reference_moves: list[Annotated[int, Field(ge=0)]] = Field(
+        default_factory=list,
+        description="Indices of reference moves that no user move matched.",
+    )
+
+    @model_validator(mode="after")
+    def check_audit(self) -> Self:
+        bad = {k: v for k, v in self.components.items() if not 0.0 <= v <= 1.0}
+        if bad:
+            raise ValueError(f"components must be between 0 and 1: {bad}")
+
+        user = [m.user_move for m in self.moves]
+        if len(user) != len(set(user)):
+            raise ValueError("a user move is audited twice")
+
+        matched = [m.reference_move for m in self.moves if m.reference_move is not None]
+        if len(matched) != len(set(matched)):
+            raise ValueError("a reference move is matched to two user moves")
+        if set(matched) & set(self.missed_reference_moves):
+            raise ValueError("a reference move is both matched and missed")
+        return self
+
+    def check_against(self, user: Trajectory, reference: Trajectory) -> None:
+        """Raise ValueError if the move indices do not fit the two trajectories."""
+        if user.source != TrajectorySource.USER or reference.source != TrajectorySource.REFERENCE:
+            raise ValueError("expected a user trajectory and a reference trajectory, in that order")
+        for traj in (user, reference):
+            if traj.route_id != self.route_id:
+                raise ValueError(f"audit is for route {self.route_id!r}, not {traj.route_id!r}")
+
+        if any(m.user_move >= len(user.moves) for m in self.moves):
+            raise ValueError(f"user move index out of range (user has {len(user.moves)} moves)")
+        ref_indices = [m.reference_move for m in self.moves if m.reference_move is not None]
+        ref_indices += self.missed_reference_moves
+        if any(i >= len(reference.moves) for i in ref_indices):
+            raise ValueError(
+                f"reference move index out of range (reference has {len(reference.moves)} moves)"
+            )

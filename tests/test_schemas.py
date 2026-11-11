@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from climbvla.schemas import (
+    Audit,
     BodyPart,
     ContactEvent,
     GroundTarget,
@@ -395,3 +396,90 @@ def test_trajectory_rejects_inconsistent_data(change, message):
     change(data)
     with pytest.raises(ValidationError, match=message):
         Trajectory.model_validate(data)
+
+
+# ---------- Audit ----------
+
+
+def make_audit_data() -> dict:
+    """Audit of a 2-move user climb against a 3-move reference.
+
+    User move 0 matches reference move 0. User move 1 has no match.
+    Reference moves 1 and 2 were missed.
+    """
+    return {
+        "route_id": "example-yellow-01",
+        "beta_score": 62.5,
+        "components": {"sequence_agreement": 0.5, "motion_similarity": 0.75},
+        "climb_metrics": {"straight_arm_ratio": 0.4, "com_path_ratio": 1.3},
+        "moves": [
+            {"user_move": 0, "reference_move": 0, "score": 80.0,
+             "user_metrics": {"hesitation_s": 1.2}, "reference_metrics": {"hesitation_s": 0.0}},
+            {"user_move": 1, "reference_move": None, "score": 40.0},
+        ],
+        "missed_reference_moves": [1, 2],
+    }
+
+
+def make_moves_trajectory(source: str, n_moves: int) -> Trajectory:
+    """A trajectory whose right hand climbs h1 -> h2 -> h3 ... one move per second."""
+    holds = [f"h{i + 1}" for i in range(n_moves + 1)]
+    contacts, moves = [], []
+    for i, hold in enumerate(holds):
+        end = i + 0.5 if i < n_moves else None
+        contacts.append({"body_part": "right_hand", "target": on(hold), "t_start": float(i), "t_end": end})
+    for i in range(n_moves):
+        moves.append({"body_part": "right_hand", "from_target": on(holds[i]),
+                      "to_target": on(holds[i + 1]), "t_start": i + 0.5, "t_end": float(i + 1)})
+    return Trajectory.model_validate({
+        "route_id": "example-yellow-01",
+        "source": source,
+        "frames": [make_pose_data(frame_index=i, t=float(i)) for i in range(n_moves + 1)],
+        "contacts": contacts,
+        "moves": moves,
+    })
+
+
+def test_audit_round_trip():
+    audit = Audit.model_validate(make_audit_data())
+    assert Audit.model_validate_json(audit.model_dump_json()) == audit
+    assert audit.moves[1].feedback is None  # coaching text comes later
+
+
+def test_audit_fits_its_trajectories():
+    audit = Audit.model_validate(make_audit_data())
+    audit.check_against(make_moves_trajectory("user", 2), make_moves_trajectory("reference", 3))
+
+
+@pytest.mark.parametrize(
+    "user_moves, ref_moves, user_source, message",
+    [
+        (1, 3, "user", "user move index out of range"),  # audit mentions user move 1
+        (2, 2, "user", "reference move index out of range"),  # audit mentions reference move 2
+        (2, 3, "reference", "expected a user trajectory"),  # two reference trajectories
+    ],
+)
+def test_audit_does_not_fit_wrong_trajectories(user_moves, ref_moves, user_source, message):
+    audit = Audit.model_validate(make_audit_data())
+    user = make_moves_trajectory(user_source, user_moves)
+    with pytest.raises(ValueError, match=message):
+        audit.check_against(user, make_moves_trajectory("reference", ref_moves))
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (lambda d: d.update(beta_score=120.0), "less than or equal to 100"),
+        (lambda d: d["components"].update(balance=1.5), "between 0 and 1"),
+        (lambda d: d["moves"][1].update(user_move=0), "audited twice"),
+        (lambda d: d["moves"][1].update(reference_move=0), "matched to two user moves"),
+        (lambda d: d.update(missed_reference_moves=[0, 1, 2]), "both matched and missed"),
+        (lambda d: d.update(missed_reference_moves=[-1]), "greater than or equal to 0"),
+        (lambda d: d["moves"][0].pop("reference_move"), "reference_move"),  # must be explicit
+    ],
+)
+def test_audit_rejects_bad_input(change, message):
+    data = make_audit_data()
+    change(data)
+    with pytest.raises(ValidationError, match=message):
+        Audit.model_validate(data)
