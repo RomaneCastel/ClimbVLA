@@ -165,3 +165,75 @@ class PoseFrame(BaseModel):
     ) -> bool:
         """True if the pose model is confident enough about this joint to use it."""
         return self[name].confidence >= min_confidence
+
+
+class BodyPart(StrEnum):
+    """Body parts that can be in contact with a hold. 'left' is the climber's left.
+
+    Knees are for knee bars and knee locks. Contact detection can report them;
+    the planner and the simulation start with hands and feet only.
+    """
+
+    LEFT_HAND = "left_hand"
+    RIGHT_HAND = "right_hand"
+    LEFT_FOOT = "left_foot"
+    RIGHT_FOOT = "right_foot"
+    LEFT_KNEE = "left_knee"
+    RIGHT_KNEE = "right_knee"
+
+    @property
+    def keypoint(self) -> KeypointName:
+        """The pose keypoint used to track this body part."""
+        return {
+            BodyPart.LEFT_HAND: KeypointName.LEFT_WRIST,
+            BodyPart.RIGHT_HAND: KeypointName.RIGHT_WRIST,
+            BodyPart.LEFT_FOOT: KeypointName.LEFT_ANKLE,
+            BodyPart.RIGHT_FOOT: KeypointName.RIGHT_ANKLE,
+            BodyPart.LEFT_KNEE: KeypointName.LEFT_KNEE,
+            BodyPart.RIGHT_KNEE: KeypointName.RIGHT_KNEE,
+        }[self]
+
+    @property
+    def is_hand(self) -> bool:
+        return self in (BodyPart.LEFT_HAND, BodyPart.RIGHT_HAND)
+
+    @property
+    def is_foot(self) -> bool:
+        return self in (BodyPart.LEFT_FOOT, BodyPart.RIGHT_FOOT)
+
+    @property
+    def is_knee(self) -> bool:
+        return self in (BodyPart.LEFT_KNEE, BodyPart.RIGHT_KNEE)
+
+
+class ContactEvent(BaseModel):
+    """One body part on one hold, from the moment it lands until it leaves.
+
+    Whether hold_id exists in the route is checked by Trajectory, which
+    knows the route; a ContactEvent alone does not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    hold_id: str = Field(min_length=1)
+    t_start: float = Field(ge=0.0, description="Seconds: when the body part lands on the hold.")
+    t_end: float | None = Field(
+        default=None,
+        description="Seconds: when it leaves. None if still on the hold when the video ends.",
+    )
+
+    @model_validator(mode="after")
+    def check_times(self) -> Self:
+        if self.t_end is not None and self.t_end <= self.t_start:
+            raise ValueError(f"t_end ({self.t_end}) must be after t_start ({self.t_start})")
+        return self
+
+    @property
+    def duration(self) -> float | None:
+        """Seconds on the hold, or None if the contact never ended."""
+        return None if self.t_end is None else self.t_end - self.t_start
+
+    def is_active(self, t: float) -> bool:
+        """True if the body part is on the hold at time t."""
+        return self.t_start <= t and (self.t_end is None or t < self.t_end)

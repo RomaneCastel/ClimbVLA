@@ -5,7 +5,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from climbvla.schemas import Hold, HoldType, KeypointName, PoseFrame, Route
+from climbvla.schemas import (
+    BodyPart,
+    ContactEvent,
+    Hold,
+    HoldType,
+    KeypointName,
+    PoseFrame,
+    Route,
+)
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 
@@ -137,3 +145,59 @@ def test_is_visible_uses_confidence_threshold():
     assert not frame.is_visible("nose")
     assert frame.is_visible("left_wrist")  # confidence 0.9 from make_pose_data
     assert frame.is_visible("nose", min_confidence=0.1)  # a stage may relax the rule
+
+
+# ---------- BodyPart and ContactEvent ----------
+
+
+def test_body_part_maps_to_keypoint():
+    assert BodyPart.LEFT_HAND.keypoint is KeypointName.LEFT_WRIST
+    assert BodyPart.RIGHT_FOOT.keypoint is KeypointName.RIGHT_ANKLE
+    assert BodyPart.LEFT_KNEE.keypoint is KeypointName.LEFT_KNEE
+
+
+def test_each_body_part_is_exactly_one_kind():
+    for part in BodyPart:
+        assert [part.is_hand, part.is_foot, part.is_knee].count(True) == 1
+
+
+def test_knee_contact():
+    # knee bar on a volume
+    contact = ContactEvent(body_part="right_knee", hold_id="v1", t_start=4.0, t_end=6.5)
+    assert contact.body_part.is_knee
+
+
+def test_contact_round_trip_and_duration():
+    contact = ContactEvent(body_part="left_hand", hold_id="h2", t_start=3.4, t_end=5.0)
+    assert ContactEvent.model_validate_json(contact.model_dump_json()) == contact
+    assert contact.duration == pytest.approx(1.6)
+
+
+def test_open_contact_has_no_end():
+    # e.g. the hands on the top hold when the video stops
+    contact = ContactEvent(body_part="right_hand", hold_id="h4", t_start=12.0)
+    assert contact.t_end is None and contact.duration is None
+    assert contact.is_active(99.0)
+
+
+def test_is_active_includes_start_excludes_end():
+    contact = ContactEvent(body_part="left_foot", hold_id="f1", t_start=1.0, t_end=2.0)
+    assert not contact.is_active(0.9)
+    assert contact.is_active(1.0)
+    assert contact.is_active(1.5)
+    assert not contact.is_active(2.0)  # at t_end the body part has left
+
+
+@pytest.mark.parametrize(
+    "bad, message",
+    [
+        (dict(body_part="left_hand", hold_id="h1", t_start=2.0, t_end=1.0), "must be after"),
+        (dict(body_part="left_hand", hold_id="h1", t_start=2.0, t_end=2.0), "must be after"),
+        (dict(body_part="left_elbow", hold_id="h1", t_start=0.0), "Input should be"),
+        (dict(body_part="left_hand", hold_id="", t_start=0.0), "at least 1 character"),
+        (dict(body_part="left_hand", hold_id="h1", t_start=-1.0), "greater than or equal to 0"),
+    ],
+)
+def test_contact_rejects_bad_input(bad, message):
+    with pytest.raises(ValidationError, match=message):
+        ContactEvent(**bad)
