@@ -237,3 +237,38 @@ class ContactEvent(BaseModel):
     def is_active(self, t: float) -> bool:
         """True if the body part is on the hold at time t."""
         return self.t_start <= t and (self.t_end is None or t < self.t_end)
+
+
+class Move(BaseModel):
+    """One body part going from one hold to another.
+
+    It starts when the body part leaves from_hold_id and ends when it lands on
+    to_hold_id. Moves that happen together (a dyno, where both hands leave at
+    once) are several Moves with overlapping times.
+
+    What the other body parts are holding during the move is not stored here:
+    it can be computed from the ContactEvents, and storing it twice would let
+    the two copies disagree.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    from_hold_id: str | None = Field(
+        description="Hold it leaves. None when it comes off the ground at the start."
+    )
+    to_hold_id: str = Field(min_length=1, description="Hold it lands on.")
+    t_start: float = Field(ge=0.0, description="Seconds: when it leaves from_hold_id.")
+    t_end: float = Field(description="Seconds: when it lands on to_hold_id.")
+
+    @model_validator(mode="after")
+    def check_move(self) -> Self:
+        if self.t_end <= self.t_start:
+            raise ValueError(f"t_end ({self.t_end}) must be after t_start ({self.t_start})")
+        if self.from_hold_id == self.to_hold_id:
+            raise ValueError(f"a move must change hold, got {self.to_hold_id!r} twice")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.t_end - self.t_start

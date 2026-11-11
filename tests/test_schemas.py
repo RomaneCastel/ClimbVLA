@@ -11,6 +11,7 @@ from climbvla.schemas import (
     Hold,
     HoldType,
     KeypointName,
+    Move,
     PoseFrame,
     Route,
 )
@@ -201,3 +202,39 @@ def test_is_active_includes_start_excludes_end():
 def test_contact_rejects_bad_input(bad, message):
     with pytest.raises(ValidationError, match=message):
         ContactEvent(**bad)
+
+
+# ---------- Move ----------
+
+
+def test_move_round_trip_and_duration():
+    move = Move(body_part="right_hand", from_hold_id="h1", to_hold_id="h2", t_start=3.0, t_end=3.8)
+    assert Move.model_validate_json(move.model_dump_json()) == move
+    assert move.duration == pytest.approx(0.8)
+
+
+def test_first_move_comes_from_the_ground():
+    move = Move(body_part="left_foot", from_hold_id=None, to_hold_id="f1", t_start=0.0, t_end=0.5)
+    assert move.from_hold_id is None
+
+
+def test_from_hold_must_be_given_explicitly():
+    # No default on purpose: forgetting it is an error, not a silent "from the ground".
+    with pytest.raises(ValidationError, match="from_hold_id"):
+        Move(body_part="left_hand", to_hold_id="h1", t_start=0.0, t_end=1.0)
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        (dict(t_end=2.0), "must be after"),  # ends before it starts
+        (dict(to_hold_id="h1"), "must change hold"),  # same hold
+        (dict(body_part="left_elbow"), "Input should be"),
+        (dict(to_hold_id=""), "at least 1 character"),
+    ],
+)
+def test_move_rejects_bad_input(overrides, message):
+    data = dict(body_part="left_hand", from_hold_id="h1", to_hold_id="h2", t_start=2.5, t_end=3.0)
+    data.update(overrides)
+    with pytest.raises(ValidationError, match=message):
+        Move(**data)
