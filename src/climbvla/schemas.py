@@ -89,3 +89,66 @@ class Route(BaseModel):
             if h.id == hold_id:
                 return h
         raise KeyError(hold_id)
+
+
+class KeypointName(StrEnum):
+    """The 17 COCO body keypoints that pose models such as ViTPose output.
+
+    'left' and 'right' are always the climber's own left and right.
+    """
+
+    NOSE = "nose"
+    LEFT_EYE = "left_eye"
+    RIGHT_EYE = "right_eye"
+    LEFT_EAR = "left_ear"
+    RIGHT_EAR = "right_ear"
+    LEFT_SHOULDER = "left_shoulder"
+    RIGHT_SHOULDER = "right_shoulder"
+    LEFT_ELBOW = "left_elbow"
+    RIGHT_ELBOW = "right_elbow"
+    LEFT_WRIST = "left_wrist"
+    RIGHT_WRIST = "right_wrist"
+    LEFT_HIP = "left_hip"
+    RIGHT_HIP = "right_hip"
+    LEFT_KNEE = "left_knee"
+    RIGHT_KNEE = "right_knee"
+    LEFT_ANKLE = "left_ankle"
+    RIGHT_ANKLE = "right_ankle"
+
+
+class Keypoint(BaseModel):
+    """One body joint, in wall-plane meters."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float
+    y: float
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="How sure the pose model is. 1.0 for simulated poses.",
+    )
+
+
+class PoseFrame(BaseModel):
+    """The climber's skeleton in one video frame (or one simulation step)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    frame_index: int = Field(ge=0, description="Position of the frame in the video.")
+    t: float = Field(ge=0.0, description="Time in seconds from the start of the video.")
+    keypoints: dict[KeypointName, Keypoint] = Field(
+        description="All 17 keypoints. Hidden joints are kept, with low confidence."
+    )
+
+    @model_validator(mode="after")
+    def check_all_keypoints_present(self) -> Self:
+        missing = [name.value for name in KeypointName if name not in self.keypoints]
+        if missing:
+            raise ValueError(f"missing keypoints: {missing}")
+        return self
+
+    def __getitem__(self, name: KeypointName | str) -> Keypoint:
+        """Shortcut: frame['left_wrist'] instead of frame.keypoints[...]."""
+        return self.keypoints[KeypointName(name)]

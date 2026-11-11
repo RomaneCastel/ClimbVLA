@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from climbvla.schemas import Hold, HoldType, Route
+from climbvla.schemas import Hold, HoldType, KeypointName, PoseFrame, Route
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 
@@ -70,3 +70,60 @@ def test_route_rejects_bad_input(route, change, message):
     change(data)
     with pytest.raises(ValidationError, match=message):
         Route.model_validate(data)
+
+
+# ---------- PoseFrame ----------
+
+
+def make_pose_data(**overrides) -> dict:
+    """Raw data for a valid PoseFrame: every keypoint at (1.0, 1.5), confidence 0.9."""
+    data = {
+        "frame_index": 12,
+        "t": 0.4,
+        "keypoints": {name.value: {"x": 1.0, "y": 1.5, "confidence": 0.9} for name in KeypointName},
+    }
+    data.update(overrides)
+    return data
+
+
+def test_pose_frame_round_trip():
+    frame = PoseFrame.model_validate(make_pose_data())
+    assert PoseFrame.model_validate_json(frame.model_dump_json()) == frame
+
+
+def test_pose_frame_lookup_by_name():
+    frame = PoseFrame.model_validate(make_pose_data())
+    assert frame["left_wrist"] is frame.keypoints[KeypointName.LEFT_WRIST]
+
+
+def test_keypoint_confidence_defaults_to_one():
+    data = make_pose_data()
+    data["keypoints"]["nose"] = {"x": 1.0, "y": 1.8}
+    assert PoseFrame.model_validate(data)["nose"].confidence == 1.0
+
+
+def _with_keypoint(name, value):
+    data = make_pose_data()
+    data["keypoints"][name] = value
+    return data
+
+
+def _without_keypoint(name):
+    data = make_pose_data()
+    del data["keypoints"][name]
+    return data
+
+
+@pytest.mark.parametrize(
+    "data, message",
+    [
+        (make_pose_data(t=-0.1), "greater than or equal to 0"),
+        (make_pose_data(frame_index=-1), "greater than or equal to 0"),
+        (_with_keypoint("nose", {"x": 1, "y": 1, "confidence": 1.5}), "less than or equal to 1"),
+        (_with_keypoint("left_tail", {"x": 1, "y": 1}), "Input should be"),
+        (_without_keypoint("right_ankle"), "missing keypoints: \\['right_ankle'\\]"),
+    ],
+)
+def test_pose_frame_rejects_bad_input(data, message):
+    with pytest.raises(ValidationError, match=message):
+        PoseFrame.model_validate(data)
