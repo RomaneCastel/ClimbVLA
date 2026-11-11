@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# uv / virtual environment
+.venv/
+
+# Tools
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
+
+# Large or private data: videos, model weights, experiment logs
+data/
+*.mp4
+*.mov
+*.pt
+*.safetensors
+wandb/
