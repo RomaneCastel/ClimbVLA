@@ -127,3 +127,13 @@ def _without_keypoint(name):
 def test_pose_frame_rejects_bad_input(data, message):
     with pytest.raises(ValidationError, match=message):
         PoseFrame.model_validate(data)
+
+
+def test_is_visible_uses_confidence_threshold():
+    # Climber seen from behind: the nose is a low-confidence guess.
+    data = _with_keypoint("nose", {"x": 1.0, "y": 1.8, "confidence": 0.2})
+    frame = PoseFrame.model_validate(data)
+
+    assert not frame.is_visible("nose")
+    assert frame.is_visible("left_wrist")  # confidence 0.9 from make_pose_data
+    assert frame.is_visible("nose", min_confidence=0.1)  # a stage may relax the rule

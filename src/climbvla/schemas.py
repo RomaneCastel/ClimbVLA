@@ -116,6 +116,13 @@ class KeypointName(StrEnum):
     RIGHT_ANKLE = "right_ankle"
 
 
+# Below this confidence a keypoint is treated as not visible. Pose models
+# always output all 17 joints and guess the hidden ones (e.g. the nose of a
+# climber seen from behind) with low confidence. Every stage uses this one
+# threshold, through PoseFrame.is_visible, instead of picking its own.
+MIN_KEYPOINT_CONFIDENCE = 0.5
+
+
 class Keypoint(BaseModel):
     """One body joint, in wall-plane meters."""
 
@@ -152,3 +159,9 @@ class PoseFrame(BaseModel):
     def __getitem__(self, name: KeypointName | str) -> Keypoint:
         """Shortcut: frame['left_wrist'] instead of frame.keypoints[...]."""
         return self.keypoints[KeypointName(name)]
+
+    def is_visible(
+        self, name: KeypointName | str, min_confidence: float = MIN_KEYPOINT_CONFIDENCE
+    ) -> bool:
+        """True if the pose model is confident enough about this joint to use it."""
+        return self[name].confidence >= min_confidence
