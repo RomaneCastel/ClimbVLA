@@ -7,8 +7,7 @@ Coordinate convention, used by every model in this file:
 """
 
 from enum import StrEnum
-
-from typing import Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -206,21 +205,59 @@ class BodyPart(StrEnum):
         return self in (BodyPart.LEFT_KNEE, BodyPart.RIGHT_KNEE)
 
 
-class ContactEvent(BaseModel):
-    """One body part on one hold, from the moment it lands until it leaves.
+# ---------- What a body part can touch ----------
+#
+# A contact is on a hold, on the bare wall (a smear, a palm, a knee scum) or
+# on the ground. Each case is its own small class with only the fields that
+# make sense for it. The "kind" field tells pydantic which class to build when
+# reading JSON: {"kind": "wall", "x": 1.3, "y": 0.5} becomes a WallTarget.
 
-    Whether hold_id exists in the route is checked by Trajectory, which
-    knows the route; a ContactEvent alone does not.
+
+class HoldTarget(BaseModel):
+    """On a hold of the route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["hold"] = "hold"
+    hold_id: str = Field(min_length=1)
+
+
+class WallTarget(BaseModel):
+    """On the bare wall, not a hold: a smear, a palm, a knee scum."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["wall"] = "wall"
+    x: float = Field(description="Meters, same wall-plane frame as holds.")
+    y: float
+
+
+class GroundTarget(BaseModel):
+    """On the ground or the mat: before the start, or after dropping off."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["ground"] = "ground"
+
+
+Target = Annotated[HoldTarget | WallTarget | GroundTarget, Field(discriminator="kind")]
+
+
+class ContactEvent(BaseModel):
+    """One body part touching one target, from the moment it lands until it leaves.
+
+    Whether a HoldTarget's hold_id exists in the route is checked by
+    Trajectory, which knows the route; a ContactEvent alone does not.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     body_part: BodyPart
-    hold_id: str = Field(min_length=1)
-    t_start: float = Field(ge=0.0, description="Seconds: when the body part lands on the hold.")
+    target: Target
+    t_start: float = Field(ge=0.0, description="Seconds: when the body part lands.")
     t_end: float | None = Field(
         default=None,
-        description="Seconds: when it leaves. None if still on the hold when the video ends.",
+        description="Seconds: when it leaves. None if still there when the video ends.",
     )
 
     @model_validator(mode="after")
@@ -231,22 +268,22 @@ class ContactEvent(BaseModel):
 
     @property
     def duration(self) -> float | None:
-        """Seconds on the hold, or None if the contact never ended."""
+        """Seconds in contact, or None if the contact never ended."""
         return None if self.t_end is None else self.t_end - self.t_start
 
     def is_active(self, t: float) -> bool:
-        """True if the body part is on the hold at time t."""
+        """True if the body part is in contact at time t."""
         return self.t_start <= t and (self.t_end is None or t < self.t_end)
 
 
 class Move(BaseModel):
-    """One body part going from one hold to another.
+    """One body part going from one target to another.
 
-    It starts when the body part leaves from_hold_id and ends when it lands on
-    to_hold_id. Moves that happen together (a dyno, where both hands leave at
+    It starts when the body part leaves from_target and ends when it lands on
+    to_target. Moves that happen together (a dyno, where both hands leave at
     once) are several Moves with overlapping times.
 
-    What the other body parts are holding during the move is not stored here:
+    What the other body parts are touching during the move is not stored here:
     it can be computed from the ContactEvents, and storing it twice would let
     the two copies disagree.
     """
@@ -254,19 +291,17 @@ class Move(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     body_part: BodyPart
-    from_hold_id: str | None = Field(
-        description="Hold it leaves. None when it comes off the ground at the start."
-    )
-    to_hold_id: str = Field(min_length=1, description="Hold it lands on.")
-    t_start: float = Field(ge=0.0, description="Seconds: when it leaves from_hold_id.")
-    t_end: float = Field(description="Seconds: when it lands on to_hold_id.")
+    from_target: Target = Field(description="Where it leaves from (GroundTarget at the start).")
+    to_target: Target = Field(description="Where it lands.")
+    t_start: float = Field(ge=0.0, description="Seconds: when it leaves from_target.")
+    t_end: float = Field(description="Seconds: when it lands on to_target.")
 
     @model_validator(mode="after")
     def check_move(self) -> Self:
         if self.t_end <= self.t_start:
             raise ValueError(f"t_end ({self.t_end}) must be after t_start ({self.t_start})")
-        if self.from_hold_id == self.to_hold_id:
-            raise ValueError(f"a move must change hold, got {self.to_hold_id!r} twice")
+        if self.from_target == self.to_target:
+            raise ValueError(f"a move must change target, got {self.to_target} twice")
         return self
 
     @property

@@ -8,12 +8,15 @@ from pydantic import ValidationError
 from climbvla.schemas import (
     BodyPart,
     ContactEvent,
+    GroundTarget,
     Hold,
+    HoldTarget,
     HoldType,
     KeypointName,
     Move,
     PoseFrame,
     Route,
+    WallTarget,
 )
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -148,7 +151,7 @@ def test_is_visible_uses_confidence_threshold():
     assert frame.is_visible("nose", min_confidence=0.1)  # a stage may relax the rule
 
 
-# ---------- BodyPart and ContactEvent ----------
+# ---------- BodyPart ----------
 
 
 def test_body_part_maps_to_keypoint():
@@ -162,27 +165,73 @@ def test_each_body_part_is_exactly_one_kind():
         assert [part.is_hand, part.is_foot, part.is_knee].count(True) == 1
 
 
-def test_knee_contact():
-    # knee bar on a volume
-    contact = ContactEvent(body_part="right_knee", hold_id="v1", t_start=4.0, t_end=6.5)
-    assert contact.body_part.is_knee
+# ---------- Targets ----------
+
+
+def on(hold_id: str) -> dict:
+    """JSON-style target for a hold, to keep the tests short."""
+    return {"kind": "hold", "hold_id": hold_id}
+
+
+SMEAR = {"kind": "wall", "x": 1.3, "y": 0.5}
+GROUND = {"kind": "ground"}
+
+
+@pytest.mark.parametrize(
+    "data, expected_class",
+    [(on("h1"), HoldTarget), (SMEAR, WallTarget), (GROUND, GroundTarget)],
+)
+def test_kind_picks_the_target_class(data, expected_class):
+    contact = ContactEvent(body_part="left_foot", target=data, t_start=0.0)
+    assert type(contact.target) is expected_class
+
+
+@pytest.mark.parametrize(
+    "bad_target, message",
+    [
+        ({"kind": "wall", "x": 1.0, "y": 1.0, "hold_id": "h1"}, "Extra inputs"),  # smear with a hold
+        ({"kind": "hold"}, "hold_id"),  # hold without an id
+        ({"kind": "hold", "hold_id": ""}, "at least 1 character"),
+        ({"kind": "ceiling"}, "does not match any of the expected tags"),
+        ({"hold_id": "h1"}, "Unable to extract tag"),  # kind missing
+    ],
+)
+def test_bad_targets_are_rejected(bad_target, message):
+    with pytest.raises(ValidationError, match=message):
+        ContactEvent(body_part="left_foot", target=bad_target, t_start=0.0)
+
+
+# ---------- ContactEvent ----------
 
 
 def test_contact_round_trip_and_duration():
-    contact = ContactEvent(body_part="left_hand", hold_id="h2", t_start=3.4, t_end=5.0)
+    contact = ContactEvent(body_part="left_hand", target=on("h2"), t_start=3.4, t_end=5.0)
     assert ContactEvent.model_validate_json(contact.model_dump_json()) == contact
     assert contact.duration == pytest.approx(1.6)
 
 
+def test_smear_contact_round_trip():
+    contact = ContactEvent(body_part="right_foot", target=SMEAR, t_start=2.0, t_end=3.0)
+    back = ContactEvent.model_validate_json(contact.model_dump_json())
+    assert back == contact
+    assert isinstance(back.target, WallTarget) and back.target.x == pytest.approx(1.3)
+
+
+def test_knee_contact():
+    # knee bar on a volume
+    contact = ContactEvent(body_part="right_knee", target=on("v1"), t_start=4.0, t_end=6.5)
+    assert contact.body_part.is_knee
+
+
 def test_open_contact_has_no_end():
     # e.g. the hands on the top hold when the video stops
-    contact = ContactEvent(body_part="right_hand", hold_id="h4", t_start=12.0)
+    contact = ContactEvent(body_part="right_hand", target=on("h4"), t_start=12.0)
     assert contact.t_end is None and contact.duration is None
     assert contact.is_active(99.0)
 
 
 def test_is_active_includes_start_excludes_end():
-    contact = ContactEvent(body_part="left_foot", hold_id="f1", t_start=1.0, t_end=2.0)
+    contact = ContactEvent(body_part="left_foot", target=on("f1"), t_start=1.0, t_end=2.0)
     assert not contact.is_active(0.9)
     assert contact.is_active(1.0)
     assert contact.is_active(1.5)
@@ -190,51 +239,62 @@ def test_is_active_includes_start_excludes_end():
 
 
 @pytest.mark.parametrize(
-    "bad, message",
+    "overrides, message",
     [
-        (dict(body_part="left_hand", hold_id="h1", t_start=2.0, t_end=1.0), "must be after"),
-        (dict(body_part="left_hand", hold_id="h1", t_start=2.0, t_end=2.0), "must be after"),
-        (dict(body_part="left_elbow", hold_id="h1", t_start=0.0), "Input should be"),
-        (dict(body_part="left_hand", hold_id="", t_start=0.0), "at least 1 character"),
-        (dict(body_part="left_hand", hold_id="h1", t_start=-1.0), "greater than or equal to 0"),
+        (dict(t_end=1.0), "must be after"),
+        (dict(t_end=2.0), "must be after"),
+        (dict(body_part="left_elbow"), "Input should be"),
+        (dict(t_start=-1.0), "greater than or equal to 0"),
     ],
 )
-def test_contact_rejects_bad_input(bad, message):
+def test_contact_rejects_bad_input(overrides, message):
+    data = dict(body_part="left_hand", target=on("h1"), t_start=2.0)
+    data.update(overrides)
     with pytest.raises(ValidationError, match=message):
-        ContactEvent(**bad)
+        ContactEvent(**data)
 
 
 # ---------- Move ----------
 
 
 def test_move_round_trip_and_duration():
-    move = Move(body_part="right_hand", from_hold_id="h1", to_hold_id="h2", t_start=3.0, t_end=3.8)
+    move = Move(body_part="right_hand", from_target=on("h1"), to_target=on("h2"), t_start=3.0, t_end=3.8)
     assert Move.model_validate_json(move.model_dump_json()) == move
     assert move.duration == pytest.approx(0.8)
 
 
 def test_first_move_comes_from_the_ground():
-    move = Move(body_part="left_foot", from_hold_id=None, to_hold_id="f1", t_start=0.0, t_end=0.5)
-    assert move.from_hold_id is None
+    move = Move(body_part="left_foot", from_target=GROUND, to_target=on("f1"), t_start=0.0, t_end=0.5)
+    assert isinstance(move.from_target, GroundTarget)
 
 
-def test_from_hold_must_be_given_explicitly():
-    # No default on purpose: forgetting it is an error, not a silent "from the ground".
-    with pytest.raises(ValidationError, match="from_hold_id"):
-        Move(body_part="left_hand", to_hold_id="h1", t_start=0.0, t_end=1.0)
+def test_foot_moves_from_smear_to_hold():
+    move = Move(body_part="left_foot", from_target=SMEAR, to_target=on("f2"), t_start=4.0, t_end=4.6)
+    assert isinstance(move.from_target, WallTarget)
+
+
+def test_smear_to_another_smear_is_a_move():
+    higher = {"kind": "wall", "x": 1.3, "y": 0.9}
+    Move(body_part="right_foot", from_target=SMEAR, to_target=higher, t_start=1.0, t_end=1.4)
+
+
+def test_from_target_must_be_given():
+    with pytest.raises(ValidationError, match="from_target"):
+        Move(body_part="left_hand", to_target=on("h1"), t_start=0.0, t_end=1.0)
 
 
 @pytest.mark.parametrize(
     "overrides, message",
     [
         (dict(t_end=2.0), "must be after"),  # ends before it starts
-        (dict(to_hold_id="h1"), "must change hold"),  # same hold
+        (dict(to_target=on("h1")), "must change target"),  # same hold
+        (dict(from_target=SMEAR, to_target=dict(SMEAR)), "must change target"),  # same wall point
+        (dict(from_target=GROUND, to_target=GROUND), "must change target"),
         (dict(body_part="left_elbow"), "Input should be"),
-        (dict(to_hold_id=""), "at least 1 character"),
     ],
 )
 def test_move_rejects_bad_input(overrides, message):
-    data = dict(body_part="left_hand", from_hold_id="h1", to_hold_id="h2", t_start=2.5, t_end=3.0)
+    data = dict(body_part="left_hand", from_target=on("h1"), to_target=on("h2"), t_start=2.5, t_end=3.0)
     data.update(overrides)
     with pytest.raises(ValidationError, match=message):
         Move(**data)
