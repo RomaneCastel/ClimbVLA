@@ -560,3 +560,52 @@ def test_audit_without_reference_rejects_comparison_fields(change, leftover):
     change(data)
     with pytest.raises(ValidationError, match=leftover):
         Audit.model_validate(data)
+
+
+# ---------- Example files (Step 1 "done" criterion) ----------
+
+
+@pytest.fixture
+def example_climb() -> Trajectory:
+    return Trajectory.model_validate_json((EXAMPLES / "trajectory_example.json").read_text())
+
+
+def test_example_climb_fits_example_route(example_climb, route):
+    example_climb.check_against_route(route)
+
+
+def test_example_climb_round_trip(example_climb):
+    assert Trajectory.model_validate_json(example_climb.model_dump_json()) == example_climb
+
+
+def test_example_climb_content(example_climb):
+    assert len(example_climb.frames) == 15
+    assert len(example_climb.moves) == 7
+    # it ends with both hands matched on the top hold
+    on_top = [c.body_part for c in example_climb.contacts_at(7.0) if c.target == HoldTarget(hold_id="h4")]
+    assert sorted(on_top) == [BodyPart.LEFT_HAND, BodyPart.RIGHT_HAND]
+    # the right foot finishes on a smear
+    assert any(isinstance(c.target, WallTarget) for c in example_climb.contacts_of(BodyPart.RIGHT_FOOT))
+    # seen from behind: the face is not visible, the wrists are
+    assert not example_climb.frames[0].is_visible("nose")
+    assert example_climb.frames[0].is_visible("left_wrist")
+
+
+def test_example_climb_wrists_are_on_their_holds(example_climb, route):
+    """While a hand is on a hold, its wrist keypoint is within the hold's radius."""
+    for frame in example_climb.frames:
+        for c in example_climb.contacts_at(frame.t):
+            if c.body_part.is_hand and isinstance(c.target, HoldTarget):
+                hold, wrist = route.hold(c.target.hold_id), frame[c.body_part.keypoint]
+                assert ((wrist.x - hold.x) ** 2 + (wrist.y - hold.y) ** 2) ** 0.5 <= hold.radius
+
+
+def test_example_file_is_up_to_date():
+    """The JSON file matches what the script would generate now."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("make_example", EXAMPLES / "make_trajectory_example.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected = module.to_readable_json(module.build()) + "\n"
+    assert (EXAMPLES / "trajectory_example.json").read_text() == expected
