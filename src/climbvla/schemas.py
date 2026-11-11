@@ -6,6 +6,7 @@ Coordinate convention, used by every model in this file:
     - x points right, y points up (not down like image pixels).
 """
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
@@ -310,8 +311,11 @@ class Move(BaseModel):
 
 
 class TrajectorySource(StrEnum):
-    USER = "user"  # tracked from the user's video
-    REFERENCE = "reference"  # produced by the planner and the simulation
+    """Where a trajectory came from. Which one is the reference is decided by
+    the comparison, not here: a friend's video can be the reference too."""
+
+    VIDEO = "video"  # tracked from a real climb on video
+    SIMULATION = "simulation"  # produced by the planner and the simulation
 
 
 # Two times closer than this are the same instant (float rounding).
@@ -321,8 +325,8 @@ TIME_TOLERANCE = 1e-6
 class Trajectory(BaseModel):
     """One whole climb of one route: the skeleton over time, contacts and moves.
 
-    The same model holds the user's climb and the simulated reference, so the
-    scorer can compare them directly.
+    The same model holds real climbs and simulated ones, so the scorer can
+    compare any two of them directly.
 
     The route is not copied in here, only its id: it lives in its own file.
     Checks that need the route are in check_against_route().
@@ -330,8 +334,18 @@ class Trajectory(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    id: str = Field(min_length=1, description="Unique, e.g. 'romane-2026-11-11-try3'.")
     route_id: str = Field(min_length=1)
     source: TrajectorySource
+
+    # Who and when. All optional: a simulation has no date, and a user may
+    # prefer not to give a name.
+    climber: str | None = Field(default=None, description="Name or nickname.")
+    climber_height_m: float | None = Field(
+        default=None, ge=1.0, le=2.5, description="Sets the scale from pixels to meters."
+    )
+    recorded_at: datetime | None = Field(default=None, description="When the climb was filmed.")
+
     frames: list[PoseFrame] = Field(min_length=1)
     contacts: list[ContactEvent] = Field(default_factory=list)
     moves: list[Move] = Field(default_factory=list)
@@ -438,16 +452,19 @@ Metrics = dict[str, float]
 
 
 class MoveAudit(BaseModel):
-    """The comparison for one of the user's moves."""
+    """The analysis of one of the user's moves."""
 
     model_config = ConfigDict(extra="forbid")
 
     user_move: int = Field(ge=0, description="Index into the user trajectory's moves.")
     reference_move: int | None = Field(
         ge=0,
-        description="Index of the matching reference move, or None if the reference has none.",
+        description="Index of the matching reference move, or None if there is no match "
+        "(or no reference at all).",
     )
-    score: float = Field(ge=0.0, le=100.0, description="This move's score, 0 to 100.")
+    score: float | None = Field(
+        default=None, ge=0.0, le=100.0, description="This move's score, 0 to 100. Needs a reference."
+    )
     user_metrics: Metrics = Field(default_factory=dict)
     reference_metrics: Metrics = Field(default_factory=dict)
     feedback: str | None = Field(
@@ -456,12 +473,25 @@ class MoveAudit(BaseModel):
 
 
 class Audit(BaseModel):
-    """The result of comparing a user climb with the reference climb of the same route."""
+    """The analysis of one user climb, optionally compared with a reference climb.
+
+    Without a reference (the planner failed, or none is wanted) the audit
+    still has the metrics and the move list, but no scores. The reference can
+    be a simulation or another real climb: a friend's, or the user's own best
+    attempt.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     route_id: str = Field(min_length=1)
-    beta_score: float = Field(ge=0.0, le=100.0)
+    user_trajectory_id: str = Field(min_length=1)
+    reference_trajectory_id: str | None = Field(
+        default=None, description="None when the climb is analysed on its own."
+    )
+
+    beta_score: float | None = Field(
+        default=None, ge=0.0, le=100.0, description="Set if and only if there is a reference."
+    )
     components: dict[str, float] = Field(
         default_factory=dict,
         description="The parts the Beta Score is mixed from, each 0 to 1, "
@@ -476,36 +506,70 @@ class Audit(BaseModel):
         description="Indices of reference moves that no user move matched.",
     )
 
+    @property
+    def has_reference(self) -> bool:
+        return self.reference_trajectory_id is not None
+
     @model_validator(mode="after")
     def check_audit(self) -> Self:
-        bad = {k: v for k, v in self.components.items() if not 0.0 <= v <= 1.0}
-        if bad:
-            raise ValueError(f"components must be between 0 and 1: {bad}")
+        if self.reference_trajectory_id == self.user_trajectory_id:
+            raise ValueError("a climb cannot be its own reference")
+        if self.has_reference:
+            self._check_with_reference()
+        else:
+            self._check_without_reference()
 
         user = [m.user_move for m in self.moves]
         if len(user) != len(set(user)):
             raise ValueError("a user move is audited twice")
+        return self
 
+    def _check_with_reference(self) -> None:
+        if self.beta_score is None:
+            raise ValueError("an audit with a reference needs a beta_score")
+        bad = {k: v for k, v in self.components.items() if not 0.0 <= v <= 1.0}
+        if bad:
+            raise ValueError(f"components must be between 0 and 1: {bad}")
         matched = [m.reference_move for m in self.moves if m.reference_move is not None]
         if len(matched) != len(set(matched)):
             raise ValueError("a reference move is matched to two user moves")
         if set(matched) & set(self.missed_reference_moves):
             raise ValueError("a reference move is both matched and missed")
-        return self
 
-    def check_against(self, user: Trajectory, reference: Trajectory) -> None:
-        """Raise ValueError if the move indices do not fit the two trajectories."""
-        if user.source != TrajectorySource.USER or reference.source != TrajectorySource.REFERENCE:
-            raise ValueError("expected a user trajectory and a reference trajectory, in that order")
+    def _check_without_reference(self) -> None:
+        """Everything that only makes sense in a comparison must be empty."""
+        problems = []
+        if self.beta_score is not None:
+            problems.append("beta_score")
+        if self.components:
+            problems.append("components")
+        if self.missed_reference_moves:
+            problems.append("missed_reference_moves")
+        for m in self.moves:
+            if m.reference_move is not None or m.score is not None or m.reference_metrics:
+                problems.append(f"move {m.user_move} has a reference_move, score or reference_metrics")
+        if problems:
+            raise ValueError(f"no reference, so these must be empty: {problems}")
+
+    def check_against(self, user: Trajectory, reference: Trajectory | None = None) -> None:
+        """Raise ValueError if this audit does not belong to these trajectories."""
+        if user.id != self.user_trajectory_id:
+            raise ValueError(f"user trajectory is {user.id!r}, audit expects {self.user_trajectory_id!r}")
+        ref_id = None if reference is None else reference.id
+        if ref_id != self.reference_trajectory_id:
+            raise ValueError(
+                f"reference trajectory is {ref_id!r}, audit expects {self.reference_trajectory_id!r}"
+            )
         for traj in (user, reference):
-            if traj.route_id != self.route_id:
+            if traj is not None and traj.route_id != self.route_id:
                 raise ValueError(f"audit is for route {self.route_id!r}, not {traj.route_id!r}")
 
         if any(m.user_move >= len(user.moves) for m in self.moves):
             raise ValueError(f"user move index out of range (user has {len(user.moves)} moves)")
-        ref_indices = [m.reference_move for m in self.moves if m.reference_move is not None]
-        ref_indices += self.missed_reference_moves
-        if any(i >= len(reference.moves) for i in ref_indices):
-            raise ValueError(
-                f"reference move index out of range (reference has {len(reference.moves)} moves)"
-            )
+        if reference is not None:
+            ref_indices = [m.reference_move for m in self.moves if m.reference_move is not None]
+            ref_indices += self.missed_reference_moves
+            if any(i >= len(reference.moves) for i in ref_indices):
+                raise ValueError(
+                    f"reference move index out of range (reference has {len(reference.moves)} moves)"
+                )

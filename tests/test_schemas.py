@@ -312,8 +312,9 @@ def make_trajectory_data() -> dict:
     moves up to foothold f1 between 0.5 s and 1.0 s.
     """
     return {
+        "id": "romane-try1",
         "route_id": "example-yellow-01",
-        "source": "user",
+        "source": "video",
         "frames": [make_pose_data(frame_index=i, t=i * 0.5) for i in range(5)],
         "contacts": [
             {"body_part": "right_hand", "target": on("h1"), "t_start": 0.0},
@@ -331,6 +332,19 @@ def test_trajectory_round_trip():
     traj = Trajectory.model_validate(make_trajectory_data())
     assert Trajectory.model_validate_json(traj.model_dump_json()) == traj
     assert (traj.start_time, traj.end_time) == (0.0, 2.0)
+
+
+def test_trajectory_who_and_when():
+    data = make_trajectory_data()
+    data.update(climber="Romane", climber_height_m=1.68, recorded_at="2026-11-11T18:30:00")
+    traj = Trajectory.model_validate(data)
+    assert traj.recorded_at.hour == 18  # the text was turned into a real datetime
+    assert Trajectory.model_validate_json(traj.model_dump_json()) == traj
+
+
+def test_who_and_when_are_optional():
+    traj = Trajectory.model_validate(make_trajectory_data())
+    assert traj.climber is None and traj.climber_height_m is None and traj.recorded_at is None
 
 
 def test_contacts_at_gives_supports_during_a_move():
@@ -389,6 +403,10 @@ def _move_without_leaving(d):
         (_move_without_leaving, "no contact ends"),
         (lambda d: d.update(frames=[]), "at least 1 item"),
         (lambda d: d.update(source="dream"), "Input should be"),
+        (lambda d: d.update(source="user"), "Input should be"),  # old name, now "video"
+        (lambda d: d.update(climber_height_m=17.0), "less than or equal to 2.5"),  # cm by mistake
+        (lambda d: d.update(recorded_at="yesterday"), "datetime"),
+        (lambda d: d.pop("id"), "id"),
     ],
 )
 def test_trajectory_rejects_inconsistent_data(change, message):
@@ -409,6 +427,8 @@ def make_audit_data() -> dict:
     """
     return {
         "route_id": "example-yellow-01",
+        "user_trajectory_id": "romane-try1",
+        "reference_trajectory_id": "sim-1",
         "beta_score": 62.5,
         "components": {"sequence_agreement": 0.5, "motion_similarity": 0.75},
         "climb_metrics": {"straight_arm_ratio": 0.4, "com_path_ratio": 1.3},
@@ -421,7 +441,20 @@ def make_audit_data() -> dict:
     }
 
 
-def make_moves_trajectory(source: str, n_moves: int) -> Trajectory:
+def make_solo_audit_data() -> dict:
+    """Audit of the same 2-move climb with no reference: metrics only."""
+    return {
+        "route_id": "example-yellow-01",
+        "user_trajectory_id": "romane-try1",
+        "climb_metrics": {"straight_arm_ratio": 0.4},
+        "moves": [
+            {"user_move": 0, "reference_move": None, "user_metrics": {"hesitation_s": 1.2}},
+            {"user_move": 1, "reference_move": None},
+        ],
+    }
+
+
+def make_moves_trajectory(id: str, source: str, n_moves: int) -> Trajectory:
     """A trajectory whose right hand climbs h1 -> h2 -> h3 ... one move per second."""
     holds = [f"h{i + 1}" for i in range(n_moves + 1)]
     contacts, moves = [], []
@@ -432,6 +465,7 @@ def make_moves_trajectory(source: str, n_moves: int) -> Trajectory:
         moves.append({"body_part": "right_hand", "from_target": on(holds[i]),
                       "to_target": on(holds[i + 1]), "t_start": i + 0.5, "t_end": float(i + 1)})
     return Trajectory.model_validate({
+        "id": id,
         "route_id": "example-yellow-01",
         "source": source,
         "frames": [make_pose_data(frame_index=i, t=float(i)) for i in range(n_moves + 1)],
@@ -443,43 +477,86 @@ def make_moves_trajectory(source: str, n_moves: int) -> Trajectory:
 def test_audit_round_trip():
     audit = Audit.model_validate(make_audit_data())
     assert Audit.model_validate_json(audit.model_dump_json()) == audit
+    assert audit.has_reference
     assert audit.moves[1].feedback is None  # coaching text comes later
 
 
-def test_audit_fits_its_trajectories():
+def test_audit_against_simulation():
     audit = Audit.model_validate(make_audit_data())
-    audit.check_against(make_moves_trajectory("user", 2), make_moves_trajectory("reference", 3))
+    user = make_moves_trajectory("romane-try1", "video", 2)
+    audit.check_against(user, make_moves_trajectory("sim-1", "simulation", 3))
+
+
+def test_audit_against_a_friends_climb():
+    # The reference is another real climb: nothing special is needed.
+    data = make_audit_data()
+    data["reference_trajectory_id"] = "alex-send"
+    audit = Audit.model_validate(data)
+    user = make_moves_trajectory("romane-try1", "video", 2)
+    audit.check_against(user, make_moves_trajectory("alex-send", "video", 3))
+
+
+def test_audit_without_reference():
+    audit = Audit.model_validate(make_solo_audit_data())
+    assert not audit.has_reference and audit.beta_score is None
+    audit.check_against(make_moves_trajectory("romane-try1", "video", 2))
 
 
 @pytest.mark.parametrize(
-    "user_moves, ref_moves, user_source, message",
+    "user_id, user_moves, ref_id, ref_moves, message",
     [
-        (1, 3, "user", "user move index out of range"),  # audit mentions user move 1
-        (2, 2, "user", "reference move index out of range"),  # audit mentions reference move 2
-        (2, 3, "reference", "expected a user trajectory"),  # two reference trajectories
+        ("romane-try1", 1, "sim-1", 3, "user move index out of range"),  # audit mentions user move 1
+        ("romane-try1", 2, "sim-1", 2, "reference move index out of range"),  # mentions ref move 2
+        ("romane-try2", 2, "sim-1", 3, "audit expects 'romane-try1'"),  # another attempt
+        ("romane-try1", 2, "sim-2", 3, "audit expects 'sim-1'"),  # another reference
     ],
 )
-def test_audit_does_not_fit_wrong_trajectories(user_moves, ref_moves, user_source, message):
+def test_audit_does_not_fit_wrong_trajectories(user_id, user_moves, ref_id, ref_moves, message):
     audit = Audit.model_validate(make_audit_data())
-    user = make_moves_trajectory(user_source, user_moves)
+    user = make_moves_trajectory(user_id, "video", user_moves)
     with pytest.raises(ValueError, match=message):
-        audit.check_against(user, make_moves_trajectory("reference", ref_moves))
+        audit.check_against(user, make_moves_trajectory(ref_id, "simulation", ref_moves))
+
+
+def test_audit_with_reference_needs_the_reference():
+    audit = Audit.model_validate(make_audit_data())
+    with pytest.raises(ValueError, match="reference trajectory is None"):
+        audit.check_against(make_moves_trajectory("romane-try1", "video", 2))
 
 
 @pytest.mark.parametrize(
     "change, message",
     [
         (lambda d: d.update(beta_score=120.0), "less than or equal to 100"),
+        (lambda d: d.update(beta_score=None), "needs a beta_score"),
         (lambda d: d["components"].update(balance=1.5), "between 0 and 1"),
         (lambda d: d["moves"][1].update(user_move=0), "audited twice"),
         (lambda d: d["moves"][1].update(reference_move=0), "matched to two user moves"),
         (lambda d: d.update(missed_reference_moves=[0, 1, 2]), "both matched and missed"),
         (lambda d: d.update(missed_reference_moves=[-1]), "greater than or equal to 0"),
         (lambda d: d["moves"][0].pop("reference_move"), "reference_move"),  # must be explicit
+        (lambda d: d.update(reference_trajectory_id="romane-try1"), "its own reference"),
     ],
 )
 def test_audit_rejects_bad_input(change, message):
     data = make_audit_data()
     change(data)
     with pytest.raises(ValidationError, match=message):
+        Audit.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "change, leftover",
+    [
+        (lambda d: d.update(beta_score=50.0), "beta_score"),
+        (lambda d: d.update(components={"sequence_agreement": 0.5}), "components"),
+        (lambda d: d.update(missed_reference_moves=[0]), "missed_reference_moves"),
+        (lambda d: d["moves"][0].update(score=70.0), "move 0"),
+        (lambda d: d["moves"][1].update(reference_move=0), "move 1"),
+    ],
+)
+def test_audit_without_reference_rejects_comparison_fields(change, leftover):
+    data = make_solo_audit_data()
+    change(data)
+    with pytest.raises(ValidationError, match=leftover):
         Audit.model_validate(data)
