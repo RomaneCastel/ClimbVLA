@@ -1,4 +1,4 @@
-"""Finding the climber's skeleton in an image (Step 2.2).
+"""Finding the climber's skeleton in an image.
 
 ViTPose is a "top-down" pose model, so it works in two stages:
     1. a person detector (RT-DETR) finds a box around each person;
