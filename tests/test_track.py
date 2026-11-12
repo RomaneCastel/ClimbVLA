@@ -42,9 +42,13 @@ class FakeEstimator:
     def __init__(self, nobody_on: tuple[int, ...] = ()):
         self.calls = 0
         self.nobody_on = nobody_on  # calls on which it finds nobody
+        self.previous_boxes: list[PersonBox | None] = []  # what each call was given
 
-    def estimate(self, image_bgr: np.ndarray) -> PixelPose | None:
+    def estimate(
+        self, image_bgr: np.ndarray, previous: PersonBox | None = None
+    ) -> PixelPose | None:
         assert image_bgr.shape == (HEIGHT, WIDTH, 3)
+        self.previous_boxes.append(previous)
         k = self.calls
         self.calls += 1
         return None if k in self.nobody_on else fake_pose(k)
@@ -87,6 +91,19 @@ def test_frames_without_person_are_kept_as_nan(video):
     assert np.isnan(track.keypoints[2]).all()  # ...but empty
     assert track.pose_at(2) is None
     assert track.pose_at(3) == fake_pose(3)
+
+
+def test_last_found_box_is_passed_on(video):
+    estimator = FakeEstimator(nobody_on=(2, 3))
+    track_video(video, estimator, end=0.5)
+    boxes = estimator.previous_boxes
+    assert boxes[0] is None  # first frame: nothing to follow yet
+    assert boxes[1] == fake_pose(0).box
+    assert boxes[2] == fake_pose(1).box
+    # nobody on calls 2 and 3: keep following the last box where the climber was
+    assert boxes[3] == fake_pose(1).box
+    assert boxes[4] == fake_pose(1).box
+    assert boxes[5] == fake_pose(4).box
 
 
 def test_models_only_run_on_kept_frames(video):

@@ -55,21 +55,53 @@ class PixelPose:
     keypoints: dict[KeypointName, tuple[float, float, float]]  # name -> (x, y, confidence)
 
 
-def pick_climber(
-    boxes: np.ndarray, scores: np.ndarray, labels: np.ndarray, person_label: int
-) -> PersonBox | None:
-    """Choose the climber among the detections: the most confident person.
+# From one frame to the next the climber moves a little, so their new box
+# overlaps the previous one a lot (usually above 0.5). A bystander's box
+# barely overlaps the climber's, if at all.
+MIN_OVERLAP = 0.1
 
-    boxes are (x1, y1, x2, y2) corners. Returns None if no person was found.
-    With one climber filmed up close, the most confident person is almost
-    always the climber; people in the background are smaller and less sure.
+
+def box_overlap(a: PersonBox, b: PersonBox) -> float:
+    """Intersection over union (IoU): the shared area divided by the total area.
+
+    1 for the same box, 0 for boxes that don't touch.
     """
-    is_person = labels == person_label
-    if not is_person.any():
+    shared_w = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
+    shared_h = max(0.0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
+    shared = shared_w * shared_h
+    total = a.w * a.h + b.w * b.h - shared
+    return shared / total if total > 0 else 0.0
+
+
+def pick_climber(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    labels: np.ndarray,
+    person_label: int,
+    previous: PersonBox | None = None,
+) -> PersonBox | None:
+    """Choose the climber among the detections.
+
+    boxes are (x1, y1, x2, y2) corners.
+    - With no previous box (the first frame): the most confident person.
+      With one climber filmed up close, that is almost always the climber.
+    - With the climber's box from the previous frame: the person whose box
+      overlaps it most. So the choice follows the climber, instead of jumping
+      to a bystander who happens to be more confident on this frame (seen on
+      a real video, while the climber hung upside down on an overhang).
+    Returns None if no person was found, or none overlaps the previous box.
+    """
+    people = [
+        PersonBox(x=x1, y=y1, w=x2 - x1, h=y2 - y1, score=float(score))
+        for (x1, y1, x2, y2), score, label in zip(boxes.tolist(), scores, labels)
+        if label == person_label
+    ]
+    if not people:
         return None
-    best = np.flatnonzero(is_person)[np.argmax(scores[is_person])]
-    x1, y1, x2, y2 = (float(v) for v in boxes[best])
-    return PersonBox(x=x1, y=y1, w=x2 - x1, h=y2 - y1, score=float(scores[best]))
+    if previous is None:
+        return max(people, key=lambda box: box.score)
+    best = max(people, key=lambda box: box_overlap(box, previous))
+    return best if box_overlap(best, previous) >= MIN_OVERLAP else None
 
 
 def check_keypoint_order(id2label: dict[int, str]) -> None:
@@ -133,7 +165,9 @@ class PoseEstimator:
         check_keypoint_order(self.pose_model.config.id2label)
 
     @torch.no_grad()  # inference only: no gradients, less memory, faster
-    def detect_climber(self, image: Image.Image) -> PersonBox | None:
+    def detect_climber(
+        self, image: Image.Image, previous: PersonBox | None = None
+    ) -> PersonBox | None:
         inputs = self.det_processor(images=image, return_tensors="pt").to(self.device)
         outputs = self.detector(**inputs)
         result = self.det_processor.post_process_object_detection(
@@ -146,14 +180,21 @@ class PoseEstimator:
             result["scores"].cpu().numpy(),
             result["labels"].cpu().numpy(),
             self.person_label,
+            previous,
         )
 
     @torch.no_grad()
-    def estimate(self, image_bgr: np.ndarray) -> PixelPose | None:
-        """Find the climber's skeleton in an OpenCV (BGR) image. None if no person."""
+    def estimate(
+        self, image_bgr: np.ndarray, previous: PersonBox | None = None
+    ) -> PixelPose | None:
+        """Find the climber's skeleton in an OpenCV (BGR) image. None if not found.
+
+        In a video, pass the climber's box from the last frame where they were
+        found, so the same person is followed (see pick_climber).
+        """
         image = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
 
-        box = self.detect_climber(image)
+        box = self.detect_climber(image, previous)
         if box is None:
             return None
 

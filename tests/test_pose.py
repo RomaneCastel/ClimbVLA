@@ -12,6 +12,7 @@ from climbvla.pose import (
     COCO_ORDER,
     PersonBox,
     PixelPose,
+    box_overlap,
     check_keypoint_order,
     keypoints_from_arrays,
     pick_climber,
@@ -36,6 +37,43 @@ def test_pick_climber_without_person():
     boxes = np.array([[0, 0, 10, 10]], dtype=float)
     assert pick_climber(boxes, np.array([0.9]), np.array([DOG]), PERSON) is None
     assert pick_climber(np.zeros((0, 4)), np.zeros(0), np.zeros(0, int), PERSON) is None
+
+
+def box(x, y, w, h, score=0.9) -> PersonBox:
+    return PersonBox(x=x, y=y, w=w, h=h, score=score)
+
+
+def test_box_overlap():
+    assert box_overlap(box(0, 0, 10, 10), box(0, 0, 10, 10)) == pytest.approx(1.0)
+    assert box_overlap(box(0, 0, 10, 10), box(20, 0, 10, 10)) == 0.0  # apart
+    assert box_overlap(box(0, 0, 10, 10), box(10, 0, 10, 10)) == 0.0  # touching edges
+    # half of each box is shared: 50 shared / 150 in total
+    assert box_overlap(box(0, 0, 10, 10), box(5, 0, 10, 10)) == pytest.approx(1 / 3)
+
+
+# Seen on a real video: the climber high on the wall, a bystander on the floor
+# who is more confident on this frame.
+CLIMBER_THEN = box(100, 100, 200, 400)
+SCENE = np.array([[105, 110, 305, 500], [400, 900, 460, 1100]], dtype=float)  # corners
+SCENE_SCORES = np.array([0.85, 0.95])
+
+
+def test_pick_climber_follows_the_previous_box():
+    labels = np.array([PERSON, PERSON])
+    # without a previous box, the bystander wins (most confident)...
+    assert pick_climber(SCENE, SCENE_SCORES, labels, PERSON).x == 400
+    # ...with the climber's previous box, the climber is kept
+    picked = pick_climber(SCENE, SCENE_SCORES, labels, PERSON, previous=CLIMBER_THEN)
+    assert (picked.x, picked.score) == (105, pytest.approx(0.85))
+
+
+def test_pick_climber_none_when_only_others_are_seen():
+    # only the bystander is detected: better no pose than the wrong person's
+    bystander_only = SCENE[1:]
+    assert (
+        pick_climber(bystander_only, SCENE_SCORES[1:], np.array([PERSON]), PERSON, CLIMBER_THEN)
+        is None
+    )
 
 
 # ---------- keypoint order ----------

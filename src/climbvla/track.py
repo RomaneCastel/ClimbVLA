@@ -47,7 +47,9 @@ class Estimator(Protocol):
     with the same method, so they run in a second without the neural networks.
     """
 
-    def estimate(self, image_bgr: np.ndarray) -> PixelPose | None: ...
+    def estimate(
+        self, image_bgr: np.ndarray, previous: PersonBox | None = None
+    ) -> PixelPose | None: ...
 
 
 @dataclass(frozen=True, eq=False)  # eq=False: comparing arrays with == is ambiguous
@@ -168,23 +170,30 @@ def track_video(
     models: str = f"{DETECTOR_MODEL} + {POSE_MODEL}",
     verbose: bool = False,
 ) -> PoseTrack:
-    """Run the estimator on the frames between start and end, one in every `step`."""
+    """Run the estimator on the frames between start and end, one in every `step`.
+
+    The climber's box from the last frame where they were found is passed to
+    the estimator, so it follows the same person through the video.
+    Limit: if the climber is lost and comes back far from that box (after a
+    long gap), they are not found again. The "person found" share shows it.
+    """
     info = read_info(path)
     frame_index: list[int] = []
     times: list[float] = []
     boxes: list[list[float]] = []
     keypoints: list[np.ndarray] = []
 
+    last_box: PersonBox | None = None  # the climber's box, the last time they were found
     began = time.monotonic()
     for frame in iter_frames(path, start=start, end=end, step=step):
-        pose = estimator.estimate(frame.image)
+        pose = estimator.estimate(frame.image, previous=last_box)
         frame_index.append(frame.index)
         times.append(frame.t)
         if pose is None:
             boxes.append([np.nan] * 5)
             keypoints.append(np.full((N_KEYPOINTS, 3), np.nan))
         else:
-            b = pose.box
+            last_box = b = pose.box
             boxes.append([b.x, b.y, b.w, b.h, b.score])
             keypoints.append(np.array([pose.keypoints[name] for name in COCO_ORDER]))
 
