@@ -68,23 +68,73 @@ class Route(BaseModel):
     @model_validator(mode="after")
     def check_hold_references(self) -> Self:
         """Checks that need several fields at once, run after the field checks."""
-        ids = [h.id for h in self.holds]
-
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicates:
-            raise ValueError(f"duplicate hold ids: {duplicates}")
-
-        unknown = [i for i in [*self.start_hold_ids, self.top_hold_id] if i not in ids]
-        if unknown:
-            raise ValueError(f"start/top hold ids not in holds: {unknown}")
-
-        if self.top_hold_id in self.start_hold_ids:
-            raise ValueError("the top hold cannot also be a start hold")
-
+        _check_hold_ids([h.id for h in self.holds], self.start_hold_ids, self.top_hold_id)
         return self
 
     def hold(self, hold_id: str) -> Hold:
         """Look up a hold by id."""
+        for h in self.holds:
+            if h.id == hold_id:
+                return h
+        raise KeyError(hold_id)
+
+
+def _check_hold_ids(ids: list[str], start_hold_ids: list[str], top_hold_id: str) -> None:
+    """The hold-id rules shared by Route (meters) and VideoRoute (pixels)."""
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate hold ids: {duplicates}")
+
+    unknown = [i for i in [*start_hold_ids, top_hold_id] if i not in ids]
+    if unknown:
+        raise ValueError(f"start/top hold ids not in holds: {unknown}")
+
+    if top_hold_id in start_hold_ids:
+        raise ValueError("the top hold cannot also be a start hold")
+
+
+class PixelHold(BaseModel):
+    """One hold as seen in a video, in pixels (y pointing DOWN, as in the image)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    x: float = Field(ge=0, description="Center, pixels from the left edge of the image.")
+    y: float = Field(ge=0, description="Center, pixels from the top edge of the image.")
+    radius: float = Field(gt=0, description="About half the hold's size in the image, in pixels.")
+    hold_type: HoldType | None = None
+
+
+class VideoRoute(BaseModel):
+    """A route as it appears in one video: its holds clicked in pixels.
+
+    Contacts are detected in the image (see the dev notes, "Camera angle"),
+    so this is what step 2 needs, not a Route in meters. The camera must not
+    move: positions clicked on one frame are then valid on every frame.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: str = Field(min_length=1)
+    video: str = Field(min_length=1, description="The video's file name.")
+    width: int = Field(gt=0, description="Image size in pixels.")
+    height: int = Field(gt=0)
+    frame_t: float = Field(ge=0, description="Time of the frame the holds were clicked on.")
+    color: str | None = None
+    grade: str | None = None
+    holds: list[PixelHold] = Field(min_length=1)
+    start_hold_ids: list[str] = Field(min_length=1, max_length=4)
+    top_hold_id: str
+
+    @model_validator(mode="after")
+    def check_holds(self) -> Self:
+        _check_hold_ids([h.id for h in self.holds], self.start_hold_ids, self.top_hold_id)
+        outside = [h.id for h in self.holds if h.x > self.width or h.y > self.height]
+        if outside:
+            raise ValueError(f"holds outside the {self.width}x{self.height} image: {outside}")
+        return self
+
+    def hold(self, hold_id: str) -> PixelHold:
         for h in self.holds:
             if h.id == hold_id:
                 return h

@@ -145,7 +145,88 @@ on the same route.
 ### Step 10 — Coaching text
 The VLM turns the numeric audit into a short written review per move.
 
-## 4. Technology
+## 4. Research track
+
+The steps above build the product. The research track turns parts of it into
+careful experiments, released artifacts and a written report, aimed at
+research engineer roles. Each item extends a step above; none adds a new
+pipeline stage.
+
+Rules for the whole track:
+
+- Fix held-out splits **before** running experiments, and split by gym or
+  wall, never by frame or crop.
+- At least 3 seeds per configuration; report mean and spread.
+- Every number in a report traces back to a W&B run and a config in the repo.
+- Report negative results and failed runs, not only the best one.
+
+### R1 — Hold-type study (extends step 4)
+- Compare zero-shot VLM, DINOv2 linear probe, and LoRA at several ranks
+  (e.g. 4, 16, 64).
+- Data-scaling curve: 50, 100, 200, 500 labeled crops.
+- Per-class results and a confusion matrix; note which types humans also
+  disagree on.
+
+*Done when:* a results table and a scaling plot with error bars exist, measured
+on unseen walls.
+
+### R2 — Tracking ablations (extends step 2)
+- Pose model: ViTPose++ vs RTMPose on climbing footage, scored (PCK) against a
+  small hand-annotated keypoint set.
+- Smoothing: none vs One-Euro vs Savitzky–Golay, measured by its effect on
+  contact detection.
+- Contact detection precision and recall against hand-labeled contacts.
+
+*Done when:* the chosen pose model, filter and contact thresholds are each
+justified by a measured comparison.
+
+### R3 — Dataset release
+- Hold crops with type labels, and annotated videos with contacts and moves.
+- Fixed train/val/test splits, a dataset card (sources, licenses, labeling
+  protocol, known biases) and the baseline tables from R1 and R2.
+- Only images whose source licenses allow redistribution; no identifiable
+  people without their consent.
+
+*Done when:* published on Hugging Face and loadable with `datasets`.
+
+### R4 — RL study (extends step 7b)
+- Log every training run, including the ones that fail.
+- Ablate reward terms, curriculum and domain-randomization ranges.
+- Success rate per move type, and generalization to unseen hold layouts and
+  limb lengths.
+
+*Done when:* a write-up explains what made the single-move policy converge,
+with training curves over several seeds.
+
+### R5 — Beta Score validation (extends step 8)
+- A few experienced climbers or coaches rate or rank a set of climbs on the
+  same routes, without seeing the Beta Score.
+- Measure rank correlation (Spearman or Kendall) between the Beta Score and
+  the human ratings, with a confidence interval.
+- Use agreement between the human raters as the ceiling, and ablate the score's
+  weights against it.
+
+*Done when:* the correlation is reported next to inter-rater agreement.
+
+### R6 — Paper reproduction
+- Reproduce one published result used by the project, e.g. ViTPose accuracy on
+  COCO val, or a standard Stable-Baselines3 PPO MuJoCo benchmark.
+
+*Done when:* the reproduced numbers match the published ones within their
+reported tolerance, or the gap is explained.
+
+### R7 — Technical report
+- 6–10 pages: method, experiments R1–R5, limitations.
+- Posted on arXiv; submitted to a relevant workshop (e.g. a computer vision in
+  sports workshop at CVPR or ICCV).
+
+*Done when:* submitted.
+
+Alongside the track: contribute fixes or examples upstream to the libraries
+the project uses (`transformers`, `peft`, Stable-Baselines3, MuJoCo, `rtmlib`)
+when the project runs into their gaps.
+
+## 5. Technology
 
 | Area | Choice | Notes |
 |---|---|---|
@@ -163,19 +244,20 @@ The VLM turns the numeric audit into a short written review per move.
 | Frontend | React, TypeScript, Vite, react-three-fiber, Tailwind, Recharts | Browser replays recorded trajectories; no physics in the browser |
 | Packaging | Docker Compose | Last, once the pipeline is stable |
 
-## 5. Order and rough timing
+## 6. Order and rough timing
 
-| Block | Steps | Rough time | Result |
-|---|---|---|---|
-| A | 1–3 | 2 weeks | Video in, moves and metrics out, holds detected |
-| B | 4–5 | 1–2 weeks | Fine-tuned hold classifier; tested C++ module |
-| C | 6–8 | 3–4 weeks | Planner, reference motion, Beta Score |
-| D | 9–10 | 1–2 weeks | Web app and coaching text |
+| Block | Steps | Research track | Rough time | Result |
+|---|---|---|---|---|
+| A | 1–3 | R2 | 2–3 weeks | Video in, moves and metrics out, holds detected |
+| B | 4–5 | R1, R3 | 2–3 weeks | Hold-type study; dataset released; tested C++ module |
+| C | 6–8 | R4, R5 | 4–6 weeks | Planner, reference motion, validated Beta Score |
+| D | 9–10 | R7 | 2–3 weeks | Web app, coaching text, technical report |
 
 Steps 4 and 5 are independent of each other and of step 2, so they can be
-moved earlier or done in parallel.
+moved earlier or done in parallel. R6 can be done at any point. The research
+track roughly adds a week per block.
 
-## 6. Main risks
+## 7. Main risks
 
 - **Pose quality on climbing footage.** Back-facing, stretched, self-occluded
   poses are hard. Check on real videos in step 2 before building on top.
@@ -185,3 +267,7 @@ moved earlier or done in parallel.
   planner's cost model, not ground truth. The UI should say "reference".
 - **Body differences.** The simulated climber must be scaled to the user's
   limb lengths, or reach-limited moves will be judged unfairly.
+- **Research track crowding out the product.** Ablations and seeds multiply
+  compute and time. Keep each R item scoped to what its "Done when" asks.
+- **Few human raters for R5.** Line up climbers or coaches early; a small but
+  consistent panel beats a large noisy one.

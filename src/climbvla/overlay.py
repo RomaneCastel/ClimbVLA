@@ -15,7 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from climbvla.draw import draw_pose
+from climbvla.draw import draw_pose, draw_text_lines
 from climbvla.track import PoseTrack
 from climbvla.video import iter_frames, read_info
 
@@ -40,19 +40,10 @@ def draw_frame(image: np.ndarray, track: PoseTrack, row: int) -> np.ndarray:
     pose = track.pose_at(row)
     out = draw_pose(image, pose) if pose is not None else image.copy()
 
-    size = max(image.shape[:2])
-    scale = max(0.4, size / 1200)  # readable on large videos; below 0.4 text is unreadable
-    thickness = max(1, round(2 * scale))
-    margin = round(20 * scale)
-    line = round(45 * scale)
     lines = [(f"t = {track.t[row]:.2f} s   frame {track.frame_index[row]}", TEXT_COLOR)]
     if pose is None:
         lines.append(("no climber found", NOBODY_COLOR))
-    for i, (text, color) in enumerate(lines):
-        origin = (margin, margin + line * (i + 1))
-        # a black outline under the text keeps it readable on any background
-        cv2.putText(out, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness * 3)
-        cv2.putText(out, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+    draw_text_lines(out, lines)
     return out
 
 

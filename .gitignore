@@ -24,3 +24,4 @@ data/
 *.safetensors
 wandb/
 *.npz
+*dev-notes*

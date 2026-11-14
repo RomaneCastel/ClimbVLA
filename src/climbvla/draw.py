@@ -1,10 +1,10 @@
-"""Drawing skeletons on images, to check results by eye."""
+"""Drawing skeletons, holds and text on images, to check results by eye."""
 
 import cv2
 import numpy as np
 
 from climbvla.pose import PixelPose
-from climbvla.schemas import MIN_KEYPOINT_CONFIDENCE, KeypointName
+from climbvla.schemas import MIN_KEYPOINT_CONFIDENCE, KeypointName, PixelHold
 
 K = KeypointName
 
@@ -76,4 +76,64 @@ def draw_pose(image: np.ndarray, pose: PixelPose) -> np.ndarray:
             cv2.circle(out, point(name), radius, _side_color(name), -1, cv2.LINE_AA)
         else:
             cv2.circle(out, point(name), radius, LOW_CONFIDENCE_COLOR, 1, cv2.LINE_AA)
+    return out
+
+
+# ---------- text ----------
+
+
+def _text_scale(image: np.ndarray) -> float:
+    # readable on large videos; below 0.4 OpenCV's font is unreadable
+    return max(0.4, max(image.shape[:2]) / 1200)
+
+
+def _put_text(
+    image: np.ndarray, text: str, origin: tuple[int, int], scale: float, color: tuple[int, int, int]
+) -> None:
+    thickness = max(1, round(2 * scale))
+    # a black outline under the text keeps it readable on any background
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness * 3)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+
+
+def draw_text_lines(image: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]]) -> None:
+    """Write (text, color) lines in the top-left corner, IN PLACE."""
+    scale = _text_scale(image)
+    margin = round(20 * scale)
+    line = round(45 * scale)
+    for i, (text, color) in enumerate(lines):
+        _put_text(image, text, (margin, margin + line * (i + 1)), scale, color)
+
+
+# ---------- holds ----------
+
+HOLD_COLOR = (0, 255, 255)  # yellow
+START_COLOR = (0, 200, 0)  # green
+TOP_COLOR = (255, 0, 255)  # magenta
+
+
+def draw_holds(
+    image: np.ndarray,
+    holds: list[PixelHold],
+    start_hold_ids: list[str] | tuple[str, ...] = (),
+    top_hold_id: str | None = None,
+) -> np.ndarray:
+    """Return a copy of the image with each hold's circle and id.
+
+    Start holds are green, the top hold magenta, the others yellow.
+    """
+    out = image.copy()
+    scale = _text_scale(image)
+    thickness = max(2, round(2 * scale))
+    for h in holds:
+        if h.id == top_hold_id:
+            color = TOP_COLOR
+        elif h.id in start_hold_ids:
+            color = START_COLOR
+        else:
+            color = HOLD_COLOR
+        center = (round(h.x), round(h.y))
+        cv2.circle(out, center, round(h.radius), color, thickness, cv2.LINE_AA)
+        label_origin = (round(h.x + h.radius * 0.7), round(h.y - h.radius * 0.7))
+        _put_text(out, h.id, label_origin, scale * 0.8, color)
     return out
