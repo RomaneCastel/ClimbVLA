@@ -58,12 +58,13 @@ Pydantic models for `Hold`, `Route`, `PoseFrame`, `ContactEvent`, `Move`,
 Works in image pixels (see §1). Sub-steps, ✅ = done:
 
 - ✅ **2.1 Read a video:** frames with the file's own timestamps.
-- ✅ **2.2 Pose on one frame:** RT-DETR finds the person box, ViTPose the 17
-  keypoints.
+- ✅ **2.2 Pose on one frame:** RT-DETR finds the person box, a keypoint model
+  the 17 keypoints (ViTPose-B at first, RTMPose-x since 2.8).
 - ✅ **2.3 Pose on the whole video, saved once** (`PoseTrack`, `.npz`). The
   climber is followed by box overlap with the previous frame.
 - ✅ **2.4 Overlay video** to check the pose by eye.
-- ✅ **2.5 Checkpoint:** the pose is good enough on the first real video.
+- ✅ **2.5 Checkpoint:** the pose looked good enough by eye on the first real
+  video. Measured in 2.8, ViTPose-B was not, on the hidden right wrist.
 - ✅ **2.6 Hold-clicking tool:** `VideoRoute`, holds in pixels for one video.
   Small addition still to do: a median "empty wall" image to click on.
 - ✅ **2.7 Cleaning the pose** (`CleanPose`): hide low-confidence joints, fix
@@ -72,12 +73,14 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
   per second, smooth (Savitzky–Golay). Known limit: hidden wrists and ankles
   are sometimes placed on the wrong body part with confidence 0.5–0.65, at
   positions a bone-length check can't rule out.
-- **2.8 Pose model check** (the pose part of R2, done early because of 2.7's
-  limit): click the true wrist and ankle positions on about 50 frames of the
-  first real video, hidden limbs included. Measure each model's error (PCK)
-  for ViTPose-B, ViTPose+ Huge and one other model (Sapiens or RTMPose), and
-  the effect of the confidence threshold (0.5 / 0.6 / 0.7) on wrong points
-  kept vs real points lost. Pick the model and threshold from the numbers.
+- ✅ **2.8 Pose model check** (the pose part of R2, done early because of
+  2.7's limit): wrists and ankles clicked by hand on 46 frames of the first
+  real video (184 points), and three keypoint models compared on the same
+  person boxes. Within 0.2 torso lengths: ViTPose-B 87% (right wrist 57%),
+  ViTPose+ Huge 94% (80%), RTMPose-x 95% (80%). At threshold 0.5 RTMPose-x
+  kept 0 wrong points (Huge 4, B 6) and dropped 6 right ones; 0.7 drops 26.
+  **Chosen: RTMPose-x, threshold 0.5** (0.07 s per frame on the CPU). Limits:
+  one video, one climber, one labeler; no point was labeled "hidden".
 - **2.9 Contact detection, in pixels:** a hand (wrist shifted toward the
   fingers) or foot is "on" a hold when it stays within the hold's circle plus a
   margin in body units, nearly still, for several frames. Also smears and the
@@ -207,8 +210,9 @@ on unseen walls.
 
 ### R2 — Tracking ablations (extends step 2)
 - Pose model: ViTPose++ vs RTMPose on climbing footage, scored (PCK) against a
-  small hand-annotated keypoint set. A first version on one video is step 2.8;
-  R2 extends it to more videos and climbers.
+  small hand-annotated keypoint set. A first version on one video is step 2.8
+  (ViTPose-B, ViTPose+ Huge, RTMPose-x; RTMPose-x chosen); R2 extends it to
+  more videos and climbers.
 - Smoothing: none vs One-Euro vs Savitzky–Golay, measured by its effect on
   contact detection.
 - Contact detection precision and recall against hand-labeled contacts.
@@ -268,7 +272,7 @@ when the project runs into their gaps.
 |---|---|---|
 | Language / packaging | Python 3.12, `uv` | |
 | Data contracts | Pydantic v2 | |
-| Pose | ViTPose++ via Hugging Face `transformers` | Fallback: RTMPose via `rtmlib` |
+| Pose | RT-DETR person boxes, then RTMPose-x (ONNX, `onnxruntime`) | Chosen in 2.8 against hand labels; ViTPose-B / ViTPose+ Huge kept for comparison. Not `rtmlib`: it needs `opencv-contrib-python`, which clashes with `opencv-python` |
 | Hold detection | RF-DETR segmentation | Apache 2.0. YOLO11-seg is an alternative but AGPL-licensed |
 | VLM | Qwen3-VL, small size, LoRA | MLX locally, or `peft` on a cloud GPU |
 | Classifier baseline | DINOv2 linear probe | |

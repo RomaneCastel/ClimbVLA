@@ -1,8 +1,10 @@
 """Finding the climber's skeleton in an image.
 
-ViTPose is a "top-down" pose model, so it works in two stages:
+This is "top-down" pose estimation, in two stages:
     1. a person detector (RT-DETR) finds a box around each person;
-    2. ViTPose looks inside the climber's box and finds the 17 COCO keypoints.
+    2. a keypoint model looks inside the climber's box and finds the 17 COCO
+       keypoints: RTMPose-x since step 2.8 (ViTPose-B before; see
+       keypoint_models.py).
 
 Everything here is in PIXELS, with y pointing DOWN, as in the image.
 Converting to wall-plane meters is a later step.
@@ -20,18 +22,16 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from transformers import (
-    AutoImageProcessor,
-    RTDetrForObjectDetection,
-    VitPoseForPoseEstimation,
-)
+from transformers import AutoImageProcessor, RTDetrForObjectDetection
 
 from climbvla.schemas import KeypointName
 
 DETECTOR_MODEL = "PekingU/rtdetr_r50vd_coco_o365"
-POSE_MODEL = "usyd-community/vitpose-base-simple"
+# The keypoint model (see keypoint_models.py). Was ViTPose-B
+# (usyd-community/vitpose-base-simple) until step 2.8 measured three models.
+KEYPOINT_MODEL = "rtmpose-x"
 
-# The 17 keypoints in the order ViTPose outputs them (the COCO order).
+# The 17 keypoints in the order the pose models output them (the COCO order).
 # KeypointName was written in the same order.
 COCO_ORDER = list(KeypointName)
 
@@ -148,21 +148,31 @@ def default_device() -> str:
 
 
 class PoseEstimator:
-    """Loads both models once; then call estimate() on as many images as needed."""
+    """Loads both models once; then call estimate() on as many images as needed.
 
-    def __init__(self, device: str | None = None, detection_threshold: float = 0.3):
+    keypoint_model: "rtmpose-x" (the default since step 2.8, where it was
+    measured against hand labels), "vitpose-b" (used before) or "vitpose-h".
+    """
+
+    def __init__(
+        self,
+        device: str | None = None,
+        detection_threshold: float = 0.3,
+        keypoint_model: str = KEYPOINT_MODEL,
+    ):
+        from climbvla.keypoint_models import load_model  # it imports this module
+
         self.device = device or default_device()
         self.detection_threshold = detection_threshold
 
-        # First use downloads the weights (~170 MB in total) into the
-        # Hugging Face cache (~/.cache/huggingface); later uses read them from there.
+        # First use downloads the weights into ~/.cache (Hugging Face for the
+        # detector, ~/.cache/climbvla for RTMPose); later uses read them from there.
         self.det_processor = AutoImageProcessor.from_pretrained(DETECTOR_MODEL)
         self.detector = RTDetrForObjectDetection.from_pretrained(DETECTOR_MODEL).to(self.device).eval()
         self.person_label = self.detector.config.label2id["person"]
 
-        self.pose_processor = AutoImageProcessor.from_pretrained(POSE_MODEL)
-        self.pose_model = VitPoseForPoseEstimation.from_pretrained(POSE_MODEL).to(self.device).eval()
-        check_keypoint_order(self.pose_model.config.id2label)
+        self.keypoint_model = load_model(keypoint_model)
+        self.models = f"{DETECTOR_MODEL} + {keypoint_model}"  # recorded in pose files
 
     @torch.no_grad()  # inference only: no gradients, less memory, faster
     def detect_climber(
@@ -198,15 +208,8 @@ class PoseEstimator:
         if box is None:
             return None
 
-        boxes = [[[box.x, box.y, box.w, box.h]]]  # one image, one box, COCO (x, y, w, h)
-        inputs = self.pose_processor(image, boxes=boxes, return_tensors="pt").to(self.device)
-        outputs = self.pose_model(**inputs)
-        result = self.pose_processor.post_process_pose_estimation(outputs, boxes=boxes)[0][0]
-
-        keypoints = keypoints_from_arrays(
-            result["keypoints"].cpu().numpy(), result["scores"].cpu().numpy()
-        )
-        return PixelPose(box=box, keypoints=keypoints)
+        points = self.keypoint_model.keypoints(image_bgr, np.array([box.x, box.y, box.w, box.h]))
+        return PixelPose(box=box, keypoints=keypoints_from_arrays(points[:, :2], points[:, 2]))
 
 
 # ---------- command line ----------

@@ -25,7 +25,7 @@ import numpy as np
 from climbvla.pose import (
     COCO_ORDER,
     DETECTOR_MODEL,
-    POSE_MODEL,
+    KEYPOINT_MODEL,
     PersonBox,
     PixelPose,
     keypoints_from_arrays,
@@ -167,7 +167,7 @@ def track_video(
     start: float = 0.0,
     end: float | None = None,
     step: int = 1,
-    models: str = f"{DETECTOR_MODEL} + {POSE_MODEL}",
+    models: str = f"{DETECTOR_MODEL} + {KEYPOINT_MODEL}",
     verbose: bool = False,
 ) -> PoseTrack:
     """Run the estimator on the frames between start and end, one in every `step`.
@@ -232,7 +232,13 @@ def main() -> None:
     estimator = PoseEstimator()
     print(f"running on {estimator.device}")
     track = track_video(
-        args.video, estimator, start=args.start, end=args.end, step=args.step, verbose=True
+        args.video,
+        estimator,
+        start=args.start,
+        end=args.end,
+        step=args.step,
+        models=estimator.models,
+        verbose=True,
     )
     out = args.out or args.video.with_name(f"{args.video.stem}_pose.npz")
     track.save(out)
