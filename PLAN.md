@@ -11,12 +11,12 @@ from memory, not a fresh search — check current versions at install time.
 
 | Decision | What it means | Why |
 |---|---|---|
-| Wall-plane 2D | Holds, pose and simulation all live in one 2D frame, in meters, in the plane of the wall | A phone on a tripod facing the wall sees roughly that plane; depth from one camera is unreliable |
-| Scale from climber height | The user enters their height; the skeleton in the first frames sets pixels-per-meter | No calibration target needed |
+| Contacts in image pixels | Step 2 finds contacts and moves in the image itself: holds are clicked (later detected) per video, and distances are measured relative to the climber's body | Real gym videos are filmed from below and to the side, often on multi-panel overhangs, so no single pixels-per-meter scale fits. Decided on 2026-11-12, on the first real video |
+| Wall-plane 2D, later | Holds, pose and simulation share one 2D frame in meters for metrics in meters, comparing two videos, and steps 6–8. Pixels are converted per wall panel, from clicked reference points | Depth from one camera is unreliable; one mapping per panel handles walls made of several panels |
 | Planner + single-move controller | A search planner picks the limb-to-hold sequence; a learned policy executes one move at a time | One policy learning whole routes from torques is a research problem; single moves are learnable |
 | Holds as attachment points | A hand or foot attaches when it is within a small radius of a hold | Avoids simulating finger friction |
 | Move-by-move comparison | Both climbs are cut into moves at contact changes, then compared inside each move | The user and the reference never move at the same speed |
-| Static, roughly frontal camera | One climber, tripod, whole route in frame | Keeps pose-to-wall mapping a single fixed transform |
+| Static camera, any angle | One climber, phone held still for the whole climb, whole route in frame | Holds clicked once stay valid on every frame |
 
 Two parts are kept deliberately as goals in themselves:
 
@@ -31,7 +31,7 @@ video ──► first frame ──► hold detector ──► color grouping ─
   │                                              │
   │                                  VLM (fine-tuned): hold types
   │                                              │
-  └──► pose model ──► wall-plane skeleton ──► contacts ──► user moves + metrics
+  └──► pose model ──► skeleton (pixels) ──► contacts ──► user moves + metrics
                                                  │
                          route holds ──► beta planner (uses climb_ik)
                                                  │
@@ -55,17 +55,52 @@ Pydantic models for `Hold`, `Route`, `PoseFrame`, `ContactEvent`, `Move`,
 *Done when:* a hand-written example route and trajectory validate and round-trip.
 
 ### Step 2 — Climber tracking
-- Pose estimation per frame, then smoothing (One-Euro or Savitzky–Golay filter).
-- Convert pixels to wall-plane meters.
-- Contact detection: a wrist or ankle is "on" a hold when it stays within a
-  radius of it at near-zero speed for several frames.
-- Metrics:
-  - center-of-mass path and its length relative to the direct path;
-  - **straight-arm ratio** — share of loaded frames with elbows near 180°;
-  - **lock-off time** — time spent holding a bent elbow under load;
-  - **balance margin** — horizontal distance of the center of mass from the
-    line between the current supports;
-  - smoothness (jerk) and hesitation time per move.
+Works in image pixels (see §1). Sub-steps, ✅ = done:
+
+- ✅ **2.1 Read a video:** frames with the file's own timestamps.
+- ✅ **2.2 Pose on one frame:** RT-DETR finds the person box, ViTPose the 17
+  keypoints.
+- ✅ **2.3 Pose on the whole video, saved once** (`PoseTrack`, `.npz`). The
+  climber is followed by box overlap with the previous frame.
+- ✅ **2.4 Overlay video** to check the pose by eye.
+- ✅ **2.5 Checkpoint:** the pose is good enough on the first real video.
+- ✅ **2.6 Hold-clicking tool:** `VideoRoute`, holds in pixels for one video.
+  Small addition still to do: a median "empty wall" image to click on.
+- ✅ **2.7 Cleaning the pose** (`CleanPose`): hide low-confidence joints, fix
+  left/right swaps, drop points seen for only 1–2 frames, fill gaps up to
+  0.3 s unless the point would have had to move faster than 3 torso lengths
+  per second, smooth (Savitzky–Golay). Known limit: hidden wrists and ankles
+  are sometimes placed on the wrong body part with confidence 0.5–0.65, at
+  positions a bone-length check can't rule out.
+- **2.8 Pose model check** (the pose part of R2, done early because of 2.7's
+  limit): click the true wrist and ankle positions on about 50 frames of the
+  first real video, hidden limbs included. Measure each model's error (PCK)
+  for ViTPose-B, ViTPose+ Huge and one other model (Sapiens or RTMPose), and
+  the effect of the confidence threshold (0.5 / 0.6 / 0.7) on wrong points
+  kept vs real points lost. Pick the model and threshold from the numbers.
+- **2.9 Contact detection, in pixels:** a hand (wrist shifted toward the
+  fingers) or foot is "on" a hold when it stays within the hold's circle plus a
+  margin in body units, nearly still, for several frames. Also smears and the
+  ground, with hysteresis. Known limit: seen from the side, a limb in front of
+  a hold may not be touching it.
+- **2.10 Moves from contacts,** with regrips merged. Open question: how a
+  `Trajectory` holds pixel data, since `PoseFrame` and `WallTarget` are in
+  meters (a pixel version, a units marker, or the full `Trajectory` only once
+  meters exist).
+- **2.11 Metrics:**
+  - angle-based, no scale needed: **straight-arm ratio** (share of loaded
+    frames with elbows near 180°) and **lock-off time** (time holding a bent
+    elbow under load);
+  - distance-based, in body units within one video: center-of-mass path and
+    its length relative to the direct path, **balance margin** (horizontal
+    distance of the center of mass from the line between the current
+    supports), smoothness (jerk) and hesitation time per move.
+- **2.12 Command-line tool:** video + clicked holds → moves, metrics, overlay.
+- **2.13 Accuracy:** precision and recall of contacts against hand-labeled
+  contacts, including false contacts from the side view.
+- **2.14 Pixels → wall-plane meters,** per wall panel, from clicked reference
+  points (possibly the holds already clicked). Needed for metrics in meters,
+  for comparing two videos of the same route, and for steps 6–8.
 
 *Done when:* a real video, with hand-clicked holds, produces a move list and
 metrics that look right on the overlay.
@@ -172,7 +207,8 @@ on unseen walls.
 
 ### R2 — Tracking ablations (extends step 2)
 - Pose model: ViTPose++ vs RTMPose on climbing footage, scored (PCK) against a
-  small hand-annotated keypoint set.
+  small hand-annotated keypoint set. A first version on one video is step 2.8;
+  R2 extends it to more videos and climbers.
 - Smoothing: none vs One-Euro vs Savitzky–Golay, measured by its effect on
   contact detection.
 - Contact detection precision and recall against hand-labeled contacts.
@@ -261,6 +297,10 @@ track roughly adds a week per block.
 
 - **Pose quality on climbing footage.** Back-facing, stretched, self-occluded
   poses are hard. Check on real videos in step 2 before building on top.
+- **Walls made of several panels.** Steps 6–7 assume one flat wall plane with
+  one tilt angle; overhangs like the first test video's have several panels.
+  Decide before step 6 whether the planner and the simulation handle panels or
+  use a flattened approximation.
 - **Single-move policy not converging.** Step 7a exists so the rest of the
   project never waits on RL.
 - **"Optimal" is a strong word.** The reference is the best sequence under the

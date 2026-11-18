@@ -107,3 +107,12 @@ def test_wrong_pose_file_rejected(video, tmp_path):
     writer.release()
     with pytest.raises(ValueError, match="wrong pose file"):
         write_overlay(other, track, tmp_path / "overlay.mp4")
+
+
+def test_overlay_of_the_cleaned_pose(video, tmp_path):
+    from climbvla.clean import clean
+
+    track = track_video(video, FakeEstimator(nobody_on=(3,)))
+    out = tmp_path / "clean.mp4"
+    assert write_overlay(video, track, out, cleaned=clean(track)) == N_FRAMES
+    assert read_info(out).frame_count == N_FRAMES

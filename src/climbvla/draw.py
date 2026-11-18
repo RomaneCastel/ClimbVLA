@@ -3,7 +3,8 @@
 import cv2
 import numpy as np
 
-from climbvla.pose import PixelPose
+from climbvla.clean import CleanPose
+from climbvla.pose import COCO_ORDER, PixelPose
 from climbvla.schemas import MIN_KEYPOINT_CONFIDENCE, KeypointName, PixelHold
 
 K = KeypointName
@@ -76,6 +77,44 @@ def draw_pose(image: np.ndarray, pose: PixelPose) -> np.ndarray:
             cv2.circle(out, point(name), radius, _side_color(name), -1, cv2.LINE_AA)
         else:
             cv2.circle(out, point(name), radius, LOW_CONFIDENCE_COLOR, 1, cv2.LINE_AA)
+    return out
+
+
+SWAPPED_COLOR = (255, 255, 255)  # white ring: left and right were swapped back here
+
+
+def draw_clean_pose(image: np.ndarray, pose: CleanPose, row: int) -> np.ndarray:
+    """Return a copy of the image with row `row` of a cleaned pose drawn on it.
+
+    Seen points are filled dots, interpolated points hollow circles, points
+    swapped back get a white ring. Unknown points (NaN) are not drawn at all,
+    nor the bones touching them.
+    """
+    out = image.copy()
+    size = max(image.shape[:2])
+    thickness = max(2, size // 400)
+    radius = max(3, size // 250)
+    index = {name: j for j, name in enumerate(COCO_ORDER)}
+
+    def known(name):
+        return not np.isnan(pose.xy[row, index[name]]).any()
+
+    def point(name):
+        x, y = pose.xy[row, index[name]]
+        return int(round(x)), int(round(y))
+
+    for a, b in SKELETON:
+        if known(a) and known(b):
+            color = _side_color(a) if _side_color(a) == _side_color(b) else CENTER_COLOR
+            cv2.line(out, point(a), point(b), color, thickness, cv2.LINE_AA)
+
+    for name, j in index.items():
+        if not known(name):
+            continue
+        filled = pose.filled[row, j]
+        cv2.circle(out, point(name), radius, _side_color(name), thickness if filled else -1, cv2.LINE_AA)
+        if pose.swapped[row, j]:
+            cv2.circle(out, point(name), radius * 2, SWAPPED_COLOR, thickness, cv2.LINE_AA)
     return out
 
 

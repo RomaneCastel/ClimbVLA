@@ -7,6 +7,8 @@ contacts, moves) will be checked with an overlay like this one.
 Try it:
     uv run python -m climbvla.overlay climb.mp4
     -> reads climb_pose.npz, writes climb_overlay.mp4 next to the video
+    uv run python -m climbvla.overlay climb.mp4 --clean
+    -> the cleaned pose instead (step 2.7), in climb_clean.mp4
 """
 
 import argparse
@@ -15,7 +17,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from climbvla.draw import draw_pose, draw_text_lines
+from climbvla.clean import CleanPose, clean
+from climbvla.draw import draw_clean_pose, draw_pose, draw_text_lines
 from climbvla.track import PoseTrack
 from climbvla.video import iter_frames, read_info
 
@@ -35,12 +38,24 @@ def output_fps(track: PoseTrack, video_fps: float) -> float:
     return video_fps / step
 
 
-def draw_frame(image: np.ndarray, track: PoseTrack, row: int) -> np.ndarray:
-    """One overlay frame: the skeleton (if any) and the time in the corner."""
+def draw_frame(
+    image: np.ndarray, track: PoseTrack, row: int, cleaned: CleanPose | None = None
+) -> np.ndarray:
+    """One overlay frame: the skeleton (if any) and the time in the corner.
+
+    With `cleaned`, the cleaned pose is drawn instead of the raw one.
+    """
     pose = track.pose_at(row)
-    out = draw_pose(image, pose) if pose is not None else image.copy()
+    if pose is None:
+        out = image.copy()
+    elif cleaned is not None:
+        out = draw_clean_pose(image, cleaned, row)
+    else:
+        out = draw_pose(image, pose)
 
     lines = [(f"t = {track.t[row]:.2f} s   frame {track.frame_index[row]}", TEXT_COLOR)]
+    if cleaned is not None:
+        lines.append(("cleaned pose", TEXT_COLOR))
     if pose is None:
         lines.append(("no climber found", NOBODY_COLOR))
     draw_text_lines(out, lines)
@@ -58,11 +73,16 @@ def _open_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWr
 
 
 def write_overlay(
-    video: str | Path, track: PoseTrack, out: str | Path, scale: float = 1.0
+    video: str | Path,
+    track: PoseTrack,
+    out: str | Path,
+    scale: float = 1.0,
+    cleaned: CleanPose | None = None,
 ) -> int:
     """Write the overlay video for the tracked frames. Returns the number of frames written.
 
     `scale` shrinks the output (0.5 = half width and height) for smaller files.
+    With `cleaned` (from climbvla.clean.clean(track)), the cleaned pose is drawn.
     """
     info = read_info(video)
     if (info.width, info.height) != (track.width, track.height):
@@ -84,7 +104,7 @@ def write_overlay(
             row = row_of.get(frame.index)
             if row is None:
                 continue  # this frame was skipped by the tracking (step > 1)
-            image = draw_frame(frame.image, track, row)
+            image = draw_frame(frame.image, track, row, cleaned)
             if scale != 1:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
             writer.write(image)
@@ -103,12 +123,17 @@ def main() -> None:
     parser.add_argument("--pose", type=Path, help="pose file (default: <video>_pose.npz)")
     parser.add_argument("--out", type=Path, help="output video (default: <video>_overlay.mp4)")
     parser.add_argument("--scale", type=float, default=1.0, help="e.g. 0.5 for half size")
+    parser.add_argument(
+        "--clean", action="store_true", help="draw the cleaned pose (default out: <video>_clean.mp4)"
+    )
     args = parser.parse_args()
 
     pose_path = args.pose or args.video.with_name(f"{args.video.stem}_pose.npz")
     track = PoseTrack.load(pose_path)
-    out = args.out or args.video.with_name(f"{args.video.stem}_overlay.mp4")
-    written = write_overlay(args.video, track, out, scale=args.scale)
+    cleaned = clean(track) if args.clean else None
+    suffix = "_clean.mp4" if args.clean else "_overlay.mp4"
+    out = args.out or args.video.with_name(f"{args.video.stem}{suffix}")
+    written = write_overlay(args.video, track, out, scale=args.scale, cleaned=cleaned)
     print(f"wrote {out}: {written} frames")
 
 
