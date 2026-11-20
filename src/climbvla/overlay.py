@@ -9,6 +9,8 @@ Try it:
     -> reads climb_pose.npz, writes climb_overlay.mp4 next to the video
     uv run python -m climbvla.overlay climb.mp4 --clean
     -> the cleaned pose instead (step 2.7), in climb_clean.mp4
+    uv run python -m climbvla.overlay climb.mp4 --contacts
+    -> the cleaned pose, the holds and the contacts (step 2.9), in climb_contacts.mp4
 """
 
 import argparse
@@ -18,7 +20,9 @@ import cv2
 import numpy as np
 
 from climbvla.clean import CleanPose, clean
-from climbvla.draw import draw_clean_pose, draw_pose, draw_text_lines
+from climbvla.contacts import PART_LABELS, PARTS, contact_label
+from climbvla.draw import draw_clean_pose, draw_contacts, draw_holds, draw_pose, draw_text_lines
+from climbvla.schemas import VideoContacts, VideoRoute
 from climbvla.track import PoseTrack
 from climbvla.video import iter_frames, read_info
 
@@ -39,12 +43,21 @@ def output_fps(track: PoseTrack, video_fps: float) -> float:
 
 
 def draw_frame(
-    image: np.ndarray, track: PoseTrack, row: int, cleaned: CleanPose | None = None
+    image: np.ndarray,
+    track: PoseTrack,
+    row: int,
+    cleaned: CleanPose | None = None,
+    route: VideoRoute | None = None,
+    contacts: VideoContacts | None = None,
 ) -> np.ndarray:
     """One overlay frame: the skeleton (if any) and the time in the corner.
 
     With `cleaned`, the cleaned pose is drawn instead of the raw one.
+    With `route` and `contacts` (step 2.9), the holds and the contacts active
+    on this frame are drawn too, and listed in the corner.
     """
+    if route is not None:
+        image = draw_holds(image, route.holds, route.start_hold_ids, route.top_hold_id)
     pose = track.pose_at(row)
     if pose is None:
         out = image.copy()
@@ -52,9 +65,17 @@ def draw_frame(
         out = draw_clean_pose(image, cleaned, row)
     else:
         out = draw_pose(image, pose)
+    t = float(track.t[row])
+    if contacts is not None:
+        out = draw_contacts(out, contacts.contacts, t)
 
-    lines = [(f"t = {track.t[row]:.2f} s   frame {track.frame_index[row]}", TEXT_COLOR)]
-    if cleaned is not None:
+    lines = [(f"t = {t:.2f} s   frame {track.frame_index[row]}", TEXT_COLOR)]
+    if contacts is not None:
+        on = {c.body_part: c for c in contacts.contacts if c.t_start <= t < c.t_end}
+        for part in PARTS:
+            c = on.get(part)
+            lines.append((f"{PART_LABELS[part]} {contact_label(c) if c else '-'}", TEXT_COLOR))
+    elif cleaned is not None:
         lines.append(("cleaned pose", TEXT_COLOR))
     if pose is None:
         lines.append(("no climber found", NOBODY_COLOR))
@@ -78,6 +99,8 @@ def write_overlay(
     out: str | Path,
     scale: float = 1.0,
     cleaned: CleanPose | None = None,
+    route: VideoRoute | None = None,
+    contacts: VideoContacts | None = None,
 ) -> int:
     """Write the overlay video for the tracked frames. Returns the number of frames written.
 
@@ -104,7 +127,7 @@ def write_overlay(
             row = row_of.get(frame.index)
             if row is None:
                 continue  # this frame was skipped by the tracking (step > 1)
-            image = draw_frame(frame.image, track, row, cleaned)
+            image = draw_frame(frame.image, track, row, cleaned, route, contacts)
             if scale != 1:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
             writer.write(image)
@@ -126,14 +149,30 @@ def main() -> None:
     parser.add_argument(
         "--clean", action="store_true", help="draw the cleaned pose (default out: <video>_clean.mp4)"
     )
+    parser.add_argument(
+        "--contacts",
+        action="store_true",
+        help="also draw the holds and contacts (step 2.9; implies --clean; "
+        "reads <video>_route.json and <video>_contacts.json; default out: <video>_contacts.mp4)",
+    )
     args = parser.parse_args()
 
     pose_path = args.pose or args.video.with_name(f"{args.video.stem}_pose.npz")
     track = PoseTrack.load(pose_path)
-    cleaned = clean(track) if args.clean else None
-    suffix = "_clean.mp4" if args.clean else "_overlay.mp4"
+    route = contacts = None
+    if args.contacts:
+        route = VideoRoute.model_validate_json(
+            args.video.with_name(f"{args.video.stem}_route.json").read_text()
+        )
+        contacts = VideoContacts.model_validate_json(
+            args.video.with_name(f"{args.video.stem}_contacts.json").read_text()
+        )
+    cleaned = clean(track) if args.clean or args.contacts else None
+    suffix = "_contacts.mp4" if args.contacts else "_clean.mp4" if args.clean else "_overlay.mp4"
     out = args.out or args.video.with_name(f"{args.video.stem}{suffix}")
-    written = write_overlay(args.video, track, out, scale=args.scale, cleaned=cleaned)
+    written = write_overlay(
+        args.video, track, out, scale=args.scale, cleaned=cleaned, route=route, contacts=contacts
+    )
     print(f"wrote {out}: {written} frames")
 
 

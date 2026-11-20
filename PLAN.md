@@ -284,18 +284,75 @@ when the project runs into their gaps.
 | Frontend | React, TypeScript, Vite, react-three-fiber, Tailwind, Recharts | Browser replays recorded trajectories; no physics in the browser |
 | Packaging | Docker Compose | Last, once the pipeline is stable |
 
-## 6. Order and rough timing
+## 6. Order and timing
 
-| Block | Steps | Research track | Rough time | Result |
-|---|---|---|---|---|
-| A | 1–3 | R2 | 2–3 weeks | Video in, moves and metrics out, holds detected |
-| B | 4–5 | R1, R3 | 2–3 weeks | Hold-type study; dataset released; tested C++ module |
-| C | 6–8 | R4, R5 | 4–6 weeks | Planner, reference motion, validated Beta Score |
-| D | 9–10 | R7 | 2–3 weeks | Web app, coaching text, technical report |
+21 weeks in total, one person full time. Week 1 starts Monday 9 November 2026;
+the report is submitted in week 21 (29 March – 4 April 2027). Holidays are not
+included: the Christmas weeks (7–8) will likely push everything back a week or
+two.
 
-Steps 4 and 5 are independent of each other and of step 2, so they can be
-moved earlier or done in parallel. R6 can be done at any point. The research
-track roughly adds a week per block.
+| Block | Steps | Research track | Weeks | Dates | Result |
+|---|---|---|---|---|---|
+| A | 1–3 | R2, R6 | 1–7 | 9 Nov – 27 Dec | Video in, moves and metrics out, holds detected |
+| B | 4–5 | R1, R3 | 8–11 | 28 Dec – 24 Jan | Hold-type study; dataset released; tested C++ module |
+| C | 6–8 | R4, R5 | 11–18 | 18 Jan – 14 Mar | Planner, reference motion, validated Beta Score |
+| D | 9–10 | R7 | 18–21 | 8 Mar – 4 Apr | Web app, coaching text, technical report |
+
+```mermaid
+gantt
+    title ClimbVLA timeline (week 1 = 9 Nov 2026)
+    dateFormat YYYY-MM-DD
+    axisFormat %d %b
+    section Product
+    1 Data format                 :done, s1, 2026-11-09, 7d
+    2.1–2.8 Climber tracking      :done, s2a, 2026-11-09, 14d
+    2.9–2.14 Climber tracking     :s2b, 2026-11-23, 14d
+    3 Prep, photos and datasets   :s3p, 2026-11-23, 14d
+    3 Wall reading                :s3, 2026-12-07, 21d
+    4 VLM hold types              :s4, 2026-12-28, 14d
+    5 C++ climb_ik                :s5, 2026-12-28, 14d
+    6 Beta planner                :s6, 2027-01-18, 14d
+    7a IK baseline                :s7a, 2027-02-01, 7d
+    7b RL controller              :s7b, 2027-02-01, 21d
+    8 Scoring                     :s8, 2027-02-22, 14d
+    9 App                         :s9, 2027-03-08, 21d
+    10 Coaching text              :s10, 2027-03-22, 7d
+    section Research
+    R2 first part, in 2.8         :done, r2a, 2026-11-16, 7d
+    R2 Tracking study             :r2, 2026-11-30, 14d
+    R6 Reproduction               :r6, 2026-12-14, 7d
+    R1 Hold-type study            :r1, 2027-01-04, 14d
+    R3 Dataset release            :r3, 2027-01-11, 14d
+    R5 Recruit raters             :r5p, 2027-01-18, 42d
+    R4 RL study                   :r4, 2027-02-08, 21d
+    R5 Score validation           :r5, 2027-03-01, 14d
+    R7 Report                     :r7, 2027-03-15, 21d
+```
+
+| Weeks | Dates | Product | Research |
+|---|---|---|---|
+| 1–2 | 9 – 22 Nov | 1 ✅; 2.1–2.8 ✅ | R2 first part (2.8) ✅ |
+| 3–4 | 23 Nov – 6 Dec | 2.9–2.14; start collecting wall photos and hold datasets for 3 | R2 from week 4 |
+| 5–7 | 7 – 27 Dec | 3 | R2 until week 5; R6 in week 6, while the detector trains |
+| 8–10 | 28 Dec – 17 Jan | 4 and 5 in parallel (weeks 8–9) | R1 (weeks 9–10); R3 from week 10 |
+| 11–12 | 18 – 31 Jan | 6 | R3 until week 11; start recruiting R5 raters |
+| 13–15 | 1 – 21 Feb | 7a (week 13), 7b | R4 from week 14 |
+| 16–17 | 22 Feb – 7 Mar | 8 | R4 until week 16; R5 validation from week 17 |
+| 18–20 | 8 – 28 Mar | 9; 10 in week 20 | R5 until week 18; R7 from week 19 |
+| 21 | 29 Mar – 4 Apr | — | R7: submit |
+
+Notes:
+
+- Step 5 runs alongside step 4 because the VLM trains on a GPU while the C++
+  module is written. Steps 4 and 5 are independent of step 2, so they can still
+  move earlier.
+- R6 can move to any week; week 6 is chosen because it is mostly waiting for
+  training runs.
+- Raters for R5 are recruited from week 11 because finding climbers or coaches
+  takes time (see §7).
+- The first estimate (2026-11-11) was 13–19 weeks. It grew to 21 mainly because
+  step 2 grew from one step to 14 sub-steps (block A: 7 weeks instead of 3–4).
+  Blocks B to D keep roughly their first estimate.
 
 ## 7. Main risks
 

@@ -360,6 +360,81 @@ class Move(BaseModel):
         return self.t_end - self.t_start
 
 
+# ---------- Contacts found in a video, in pixels (step 2.9) ----------
+#
+# ContactEvent's WallTarget is in meters, which step 2 does not have yet
+# (see PLAN.md §1, "Contacts in image pixels"). Until pixels can be converted
+# to meters (2.14), contacts found in a video are kept in pixels, like
+# PixelHold next to Hold.
+
+
+class PixelContact(BaseModel):
+    """One body part touching one thing in a video, found from the pose.
+
+    kind:
+        "hold"   a hold of the route (hold_id says which);
+        "wall"   anything else on the wall: a smear, or a hold of another route;
+        "ground" the mat, before the start or after dropping off.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    kind: Literal["hold", "wall", "ground"]
+    hold_id: str | None = Field(default=None, description="Set only when kind is 'hold'.")
+    x: float = Field(description="Median contact point while touching, pixels from the left.")
+    y: float = Field(description="Pixels from the top (y points DOWN, as in the image).")
+    t_start: float = Field(ge=0.0, description="Seconds: when it lands.")
+    t_end: float = Field(description="Seconds: when it leaves, or the last time it was seen there.")
+    hidden_s: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Seconds of the contact when the body part was not seen confidently: hidden "
+            "(assumed to stay put) or only seen with low confidence (weak evidence)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def check_contact(self) -> Self:
+        if self.t_end <= self.t_start:
+            raise ValueError(f"t_end ({self.t_end}) must be after t_start ({self.t_start})")
+        if (self.kind == "hold") != (self.hold_id is not None):
+            raise ValueError("hold_id must be set for a 'hold' contact, and only then")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.t_end - self.t_start
+
+
+class VideoContacts(BaseModel):
+    """All the contacts found in one video, with what they were measured against."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    video: str = Field(min_length=1)
+    route_id: str = Field(min_length=1)
+    torso_px: float = Field(gt=0, description="The distance unit used by the thresholds.")
+    ground_y: float | None = Field(
+        default=None, description="Pixels: feet this low are on the ground. None if unknown."
+    )
+    contacts: list[PixelContact] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def check_no_overlap(self) -> Self:
+        """A body part cannot be in two places at once."""
+        for part in BodyPart:
+            mine = sorted((c for c in self.contacts if c.body_part == part), key=lambda c: c.t_start)
+            for prev, cur in zip(mine, mine[1:]):
+                if prev.t_end > cur.t_start + TIME_TOLERANCE:
+                    raise ValueError(f"{part} has overlapping contacts at t={cur.t_start}")
+        return self
+
+    def of(self, part: BodyPart) -> list[PixelContact]:
+        return [c for c in self.contacts if c.body_part == part]
+
+
 class TrajectorySource(StrEnum):
     """Where a trajectory came from. Which one is the reference is decided by
     the comparison, not here: a friend's video can be the reference too."""

@@ -5,7 +5,7 @@ import numpy as np
 
 from climbvla.clean import CleanPose
 from climbvla.pose import COCO_ORDER, PixelPose
-from climbvla.schemas import MIN_KEYPOINT_CONFIDENCE, KeypointName, PixelHold
+from climbvla.schemas import MIN_KEYPOINT_CONFIDENCE, KeypointName, PixelContact, PixelHold
 
 K = KeypointName
 
@@ -175,4 +175,29 @@ def draw_holds(
         cv2.circle(out, center, round(h.radius), color, thickness, cv2.LINE_AA)
         label_origin = (round(h.x + h.radius * 0.7), round(h.y - h.radius * 0.7))
         _put_text(out, h.id, label_origin, scale * 0.8, color)
+    return out
+
+
+# ---------- contacts ----------
+
+CONTACT_COLORS = {"hold": (0, 220, 0), "wall": (200, 200, 200), "ground": (40, 90, 160)}  # BGR
+PART_SHORT = {"left_hand": "LH", "right_hand": "RH", "left_foot": "LF", "right_foot": "RF"}
+
+
+def draw_contacts(image: np.ndarray, contacts: list[PixelContact], t: float) -> np.ndarray:
+    """Return a copy of the image with the contacts active at time t.
+
+    Each one is a thick ring at the median contact point, labeled e.g. "LH h4".
+    """
+    out = image.copy()
+    scale = _text_scale(image)
+    radius = round(28 * scale)
+    for c in contacts:
+        if not c.t_start <= t < c.t_end:
+            continue
+        center = (round(c.x), round(c.y))
+        cv2.circle(out, center, radius, CONTACT_COLORS[c.kind], max(3, round(5 * scale)), cv2.LINE_AA)
+        target = c.hold_id if c.kind == "hold" else c.kind
+        label = f"{PART_SHORT.get(c.body_part.value, c.body_part.value)} {target}"
+        _put_text(out, label, (center[0] + radius, center[1] + radius), scale * 0.8, CONTACT_COLORS[c.kind])
     return out
