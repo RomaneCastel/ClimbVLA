@@ -11,7 +11,7 @@ from memory, not a fresh search — check current versions at install time.
 
 | Decision | What it means | Why |
 |---|---|---|
-| Contacts in image pixels | Step 2 finds contacts and moves in the image itself: holds are clicked (later detected) per video, and distances are measured relative to the climber's body | Real gym videos are filmed from below and to the side, often on multi-panel overhangs, so no single pixels-per-meter scale fits. Decided on 2026-11-12, on the first real video |
+| Contacts in image pixels | Step 2 finds contacts and moves in the image itself: holds are clicked (later detected) per video, and distances are measured relative to the climber's body. Contacts and moves stay in pixels (`PixelContact`) until 2.14 converts them to meters | Real gym videos are filmed from below and to the side, often on multi-panel overhangs, so no single pixels-per-meter scale fits. Decided on 2026-11-12, on the first real video |
 | Wall-plane 2D, later | Holds, pose and simulation share one 2D frame in meters for metrics in meters, comparing two videos, and steps 6–8. Pixels are converted per wall panel, from clicked reference points | Depth from one camera is unreliable; one mapping per panel handles walls made of several panels |
 | Planner + single-move controller | A search planner picks the limb-to-hold sequence; a learned policy executes one move at a time | One policy learning whole routes from torques is a research problem; single moves are learnable |
 | Holds as attachment points | A hand or foot attaches when it is within a small radius of a hold | Avoids simulating finger friction |
@@ -81,15 +81,21 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
   kept 0 wrong points (Huge 4, B 6) and dropped 6 right ones; 0.7 drops 26.
   **Chosen: RTMPose-x, threshold 0.5** (0.07 s per frame on the CPU). Limits:
   one video, one climber, one labeler; no point was labeled "hidden".
-- **2.9 Contact detection, in pixels:** a hand (wrist shifted toward the
-  fingers) or foot is "on" a hold when it stays within the hold's circle plus a
-  margin in body units, nearly still, for several frames. Also smears and the
-  ground, with hysteresis. Known limit: seen from the side, a limb in front of
-  a hold may not be touching it.
-- **2.10 Moves from contacts,** with regrips merged. Open question: how a
-  `Trajectory` holds pixel data, since `PoseFrame` and `WallTarget` are in
-  meters (a pixel version, a units marker, or the full `Trajectory` only once
-  meters exist).
+- ✅ **2.9 Contact detection, in pixels** (`contacts.py`, saved as
+  `VideoContacts` of `PixelContact`): close + nearly still for 0.2 s, with
+  hysteresis (hand lands within 0.10 torso lengths of a hold's circle, leaves
+  beyond 0.25; feet 0.35 / 0.50, since the ankle is not the toes). Targets:
+  route holds, the ground (feet as low as at the start), the wall (still feet
+  off the route's holds: smears and other routes' holds). Hidden parts keep
+  their contact. Weak evidence: where the wrist or ankle is only seen with low
+  confidence, its half-second median can still land it on a hold (Robert's
+  right hand on h5, confidence 0.2–0.46). `overlay --contacts` to check.
+  Known limits: "wall" can't tell a smear from a foot hanging still; seen from
+  the side, a limb in front of a hold may not touch it; thresholds fitted on
+  one video.
+- **2.10 Moves from contacts,** with regrips merged. Moves are built from the
+  `PixelContact`s, in pixels; they become `Move`s and `ContactEvent`s in meters
+  only in 2.14 (decided 2026-11-20).
 - **2.11 Metrics:**
   - angle-based, no scale needed: **straight-arm ratio** (share of loaded
     frames with elbows near 180°) and **lock-off time** (time holding a bent
@@ -100,7 +106,11 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
     supports), smoothness (jerk) and hesitation time per move.
 - **2.12 Command-line tool:** video + clicked holds → moves, metrics, overlay.
 - **2.13 Accuracy:** precision and recall of contacts against hand-labeled
-  contacts, including false contacts from the side view.
+  contacts, including false contacts from the side view. Also decides whether
+  feet need toe keypoints: if foot contacts are clearly worse than hand
+  contacts, switch to a whole-body pose model (COCO-WholeBody: big toe, small
+  toe and heel points), which means rerunning the pose and going beyond 17
+  keypoints (decided 2026-11-20).
 - **2.14 Pixels → wall-plane meters,** per wall panel, from clicked reference
   points (possibly the holds already clicked). Needed for metrics in meters,
   for comparing two videos of the same route, and for steps 6–8.
