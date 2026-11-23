@@ -93,9 +93,16 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
   Known limits: "wall" can't tell a smear from a foot hanging still; seen from
   the side, a limb in front of a hold may not touch it; thresholds fitted on
   one video.
-- **2.10 Moves from contacts,** with regrips merged. Moves are built from the
-  `PixelContact`s, in pixels; they become `Move`s and `ContactEvent`s in meters
-  only in 2.14 (decided 2026-11-20).
+- ✅ **2.10 Moves from contacts** (`moves.py`, saved in `VideoContacts` as
+  `PixelMove`s and `PixelRegrip`s next to the contacts): every gap between two
+  contacts of one body part is a move (different target) or a regrip (back on
+  the same hold, the ground, or a wall spot within 0.5 torso lengths). Moves
+  may last 0 s (sliding off a hold onto the wall); dynos are overlapping moves.
+  They become `Move`s and `ContactEvent`s in meters only in 2.14 (decided
+  2026-11-20). First real video: 14 moves, 1 regrip. Known limit: three moves
+  of 0.1–0.3 s cover only 0.4–0.5 torso lengths (LH h8 → h4, RF h3 ↔ wall),
+  likely a hand or foot sitting between two targets rather than a real move;
+  2.13 will tell.
 - **2.11 Metrics:**
   - angle-based, no scale needed: **straight-arm ratio** (share of loaded
     frames with elbows near 180°) and **lock-off time** (time holding a bent

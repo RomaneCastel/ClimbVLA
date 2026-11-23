@@ -408,8 +408,101 @@ class PixelContact(BaseModel):
         return self.t_end - self.t_start
 
 
+# ---------- Moves found in a video, in pixels (step 2.10) ----------
+#
+# Between two consecutive contacts of one body part there is a free gap. It is
+# a move when the two contacts are on different targets, and a regrip when the
+# body part comes back to the same target. Like the contacts, both stay in
+# pixels until 2.14, where they become Moves in meters.
+
+
+class PixelTarget(BaseModel):
+    """What a body part touches, in pixels: a hold of the route, the wall, or the ground."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["hold", "wall", "ground"]
+    hold_id: str | None = Field(default=None, description="Set only when kind is 'hold'.")
+    x: float = Field(description="The contact point (median while touching), pixels from the left.")
+    y: float = Field(description="Pixels from the top.")
+
+    @model_validator(mode="after")
+    def check_hold_id(self) -> Self:
+        if (self.kind == "hold") != (self.hold_id is not None):
+            raise ValueError("hold_id must be set for a 'hold' target, and only then")
+        return self
+
+    @classmethod
+    def of(cls, contact: PixelContact) -> "PixelTarget":
+        return cls(kind=contact.kind, hold_id=contact.hold_id, x=contact.x, y=contact.y)
+
+    @property
+    def label(self) -> str:
+        """'h4', 'wall' or 'ground'."""
+        return self.hold_id if self.hold_id is not None else self.kind
+
+    def matches(self, contact: PixelContact) -> bool:
+        """Is this the target of that contact? (Same kind and same hold.)"""
+        return self.kind == contact.kind and self.hold_id == contact.hold_id
+
+
+class PixelMove(BaseModel):
+    """One body part going from one contact to the next, in a video.
+
+    It starts when the body part leaves from_target and ends when it lands on
+    to_target. Unlike Move, it may last 0 s: a foot sliding off a hold onto
+    the wall right below it lands on the frame it leaves. Moves done together
+    (a dyno) are several PixelMoves with overlapping times.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    from_target: PixelTarget
+    to_target: PixelTarget
+    t_start: float = Field(ge=0.0, description="Seconds: when it leaves from_target.")
+    t_end: float = Field(description="Seconds: when it lands on to_target.")
+
+    @model_validator(mode="after")
+    def check_move(self) -> Self:
+        if self.t_end < self.t_start - TIME_TOLERANCE:
+            raise ValueError(f"t_end ({self.t_end}) must not be before t_start ({self.t_start})")
+        a, b = self.from_target, self.to_target
+        if a.kind == b.kind and a.kind != "wall" and a.hold_id == b.hold_id:
+            raise ValueError(f"a move must change target, got {a.label} twice")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.t_end - self.t_start
+
+
+class PixelRegrip(BaseModel):
+    """A body part leaving a target and coming back to it: re-gripping, chalking
+    up, shaking out, or re-placing a foot. Not a move: the climber is where
+    they were. The time off tells the cases apart (a regrip is short)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    target: PixelTarget = Field(description="Where it was before letting go.")
+    t_off: float = Field(ge=0.0, description="Seconds: when it lets go.")
+    t_on: float = Field(description="Seconds: when it is back.")
+
+    @model_validator(mode="after")
+    def check_times(self) -> Self:
+        if self.t_on < self.t_off - TIME_TOLERANCE:
+            raise ValueError(f"t_on ({self.t_on}) must not be before t_off ({self.t_off})")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.t_on - self.t_off
+
+
 class VideoContacts(BaseModel):
-    """All the contacts found in one video, with what they were measured against."""
+    """All the contacts found in one video, with what they were measured against,
+    and the moves and regrips between them (empty until step 2.10 has run)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -420,6 +513,8 @@ class VideoContacts(BaseModel):
         default=None, description="Pixels: feet this low are on the ground. None if unknown."
     )
     contacts: list[PixelContact] = Field(default_factory=list)
+    moves: list[PixelMove] = Field(default_factory=list)
+    regrips: list[PixelRegrip] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_no_overlap(self) -> Self:
@@ -429,6 +524,34 @@ class VideoContacts(BaseModel):
             for prev, cur in zip(mine, mine[1:]):
                 if prev.t_end > cur.t_start + TIME_TOLERANCE:
                     raise ValueError(f"{part} has overlapping contacts at t={cur.t_start}")
+        return self
+
+    @model_validator(mode="after")
+    def check_gaps_link_contacts(self) -> Self:
+        """Each move or regrip leaves a contact ending when it starts, and lands
+        on one starting when it ends, as in Trajectory."""
+
+        def find(part: BodyPart, target: PixelTarget, *, end: float | None = None, start: float | None = None):
+            for c in self.of(part):
+                if not target.matches(c):
+                    continue
+                if end is not None and abs(c.t_end - end) > TIME_TOLERANCE:
+                    continue
+                if start is not None and abs(c.t_start - start) > TIME_TOLERANCE:
+                    continue
+                return c
+            return None
+
+        for m in self.moves:
+            if find(m.body_part, m.from_target, end=m.t_start) is None:
+                raise ValueError(f"no {m.body_part} contact on {m.from_target.label} ends at t={m.t_start}")
+            if find(m.body_part, m.to_target, start=m.t_end) is None:
+                raise ValueError(f"no {m.body_part} contact on {m.to_target.label} starts at t={m.t_end}")
+        for r in self.regrips:
+            if find(r.body_part, r.target, end=r.t_off) is None or find(
+                r.body_part, r.target, start=r.t_on
+            ) is None:
+                raise ValueError(f"regrip of {r.body_part} on {r.target.label} at t={r.t_off} links no contacts")
         return self
 
     def of(self, part: BodyPart) -> list[PixelContact]:

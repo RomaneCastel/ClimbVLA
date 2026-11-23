@@ -52,7 +52,8 @@ clean.body_size), so the rules work whatever the climber's size in the image.
 Try it:
     uv run python -m climbvla.contacts climb.mp4
     -> reads climb_pose.npz and climb_route.json,
-       writes climb_contacts.json and climb_contacts.png (a timeline)
+       writes climb_contacts.json (with the moves of step 2.10, see moves.py)
+       and climb_contacts.png (a timeline)
 """
 
 import argparse
@@ -63,6 +64,7 @@ import cv2
 import numpy as np
 
 from climbvla.clean import CleanPose, body_size, clean
+from climbvla.moves import find_moves
 from climbvla.pose import COCO_ORDER
 from climbvla.schemas import (
     TIME_TOLERANCE,
@@ -429,6 +431,10 @@ def draw_timeline(contacts: VideoContacts, duration: float, width: int = 1600) -
     for r, part in enumerate(PARTS):
         y0 = top + r * row
         cv2.putText(image, PART_LABELS[part], (20, y0 + row // 2 + 5), font, 0.7, (0, 0, 0), 2)
+        for g in contacts.regrips:
+            if g.body_part == part:
+                y = y0 + row // 2
+                cv2.line(image, (x_of(g.t_off), y), (x_of(g.t_on), y), KIND_COLORS[g.target.kind], 3)
         for c in contacts.of(part):
             x0, x1 = x_of(c.t_start), max(x_of(c.t_end), x_of(c.t_start) + 2)
             cv2.rectangle(image, (x0, y0 + 8), (x1, y0 + row - 8), KIND_COLORS[c.kind], -1)
@@ -448,6 +454,19 @@ def print_table(contacts: VideoContacts) -> None:
             f"{PART_LABELS[c.body_part]:4} {contact_label(c):>6} "
             f"{c.t_start:6.2f} {c.t_end:6.2f} {c.hidden_s:6.2f}"
         )
+    if contacts.moves or contacts.regrips:
+        print(f"\n{'part':4} {'move':>15} {'from':>6} {'to':>6} {'takes':>6} {'torsos':>6}")
+        for m in contacts.moves:
+            move = f"{m.from_target.label} -> {m.to_target.label}"
+            a, b = m.from_target, m.to_target
+            far = np.hypot(b.x - a.x, b.y - a.y) / contacts.torso_px  # contact point to contact point
+            print(
+                f"{PART_LABELS[m.body_part]:4} {move:>15} {m.t_start:6.2f} {m.t_end:6.2f} "
+                f"{m.duration:6.2f} {far:6.2f}"
+            )
+        for g in contacts.regrips:
+            regrip = f"regrip {g.target.label}"
+            print(f"{PART_LABELS[g.body_part]:4} {regrip:>15} {g.t_off:6.2f} {g.t_on:6.2f} {g.duration:6.2f}")
 
 
 def main() -> None:
@@ -462,14 +481,17 @@ def main() -> None:
     track = PoseTrack.load(args.pose or f"{stem}_pose.npz")
     pose = clean(track)
     route = VideoRoute.model_validate_json(Path(args.route or f"{stem}_route.json").read_text())
-    contacts = detect_contacts(pose, route, track=track)
+    contacts = find_moves(detect_contacts(pose, route, track=track))
 
     out = args.out or Path(f"{stem}_contacts.json")
     out.write_text(contacts.model_dump_json(indent=2))
     timeline = out.with_suffix(".png")
     cv2.imwrite(str(timeline), draw_timeline(contacts, float(pose.t[-1])))
     print_table(contacts)
-    print(f"wrote {out} ({len(contacts.contacts)} contacts) and {timeline}")
+    print(
+        f"wrote {out} ({len(contacts.contacts)} contacts, {len(contacts.moves)} moves, "
+        f"{len(contacts.regrips)} regrips) and {timeline}"
+    )
 
 
 if __name__ == "__main__":

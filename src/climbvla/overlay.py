@@ -21,10 +21,30 @@ import numpy as np
 
 from climbvla.clean import CleanPose, clean
 from climbvla.contacts import PART_LABELS, PARTS, contact_label
-from climbvla.draw import draw_clean_pose, draw_contacts, draw_holds, draw_pose, draw_text_lines
-from climbvla.schemas import VideoContacts, VideoRoute
+from climbvla.draw import (
+    draw_clean_pose,
+    draw_contacts,
+    draw_holds,
+    draw_pose,
+    draw_text_lines,
+)
+from climbvla.moves import move_at, regrip_at
+from climbvla.schemas import BodyPart, PixelContact, VideoContacts, VideoRoute
 from climbvla.track import PoseTrack
 from climbvla.video import iter_frames, read_info
+
+
+def part_status(contacts: VideoContacts, on: PixelContact | None, part: BodyPart, t: float) -> str:
+    """What one body part is doing at time t: 'h4', 'h5 -> h4' (a move), 'regrip h4', or '-'."""
+    if on is not None:
+        return contact_label(on)
+    move = move_at(contacts, part, t)
+    if move is not None:
+        return f"{move.from_target.label} -> {move.to_target.label}"
+    regrip = regrip_at(contacts, part, t)
+    if regrip is not None:
+        return f"regrip {regrip.target.label}"
+    return "-"
 
 TEXT_COLOR = (255, 255, 255)
 NOBODY_COLOR = (0, 0, 255)  # red
@@ -73,8 +93,7 @@ def draw_frame(
     if contacts is not None:
         on = {c.body_part: c for c in contacts.contacts if c.t_start <= t < c.t_end}
         for part in PARTS:
-            c = on.get(part)
-            lines.append((f"{PART_LABELS[part]} {contact_label(c) if c else '-'}", TEXT_COLOR))
+            lines.append((f"{PART_LABELS[part]} {part_status(contacts, on.get(part), part, t)}", TEXT_COLOR))
     elif cleaned is not None:
         lines.append(("cleaned pose", TEXT_COLOR))
     if pose is None:
