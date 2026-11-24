@@ -11,6 +11,9 @@ Try it:
     -> the cleaned pose instead (step 2.7), in climb_clean.mp4
     uv run python -m climbvla.overlay climb.mp4 --contacts
     -> the cleaned pose, the holds and the contacts (step 2.9), in climb_contacts.mp4
+    uv run python -m climbvla.overlay climb.mp4 --metrics
+    -> the same plus the center of mass and the elbow angles
+       (step 2.11), in climb_metrics.mp4
 """
 
 import argparse
@@ -23,11 +26,13 @@ from climbvla.clean import CleanPose, clean
 from climbvla.contacts import PART_LABELS, PARTS, contact_label
 from climbvla.draw import (
     draw_clean_pose,
+    draw_com,
     draw_contacts,
     draw_holds,
     draw_pose,
     draw_text_lines,
 )
+from climbvla.metrics import HANDS, Series, series
 from climbvla.moves import move_at, regrip_at
 from climbvla.schemas import BodyPart, PixelContact, VideoContacts, VideoRoute
 from climbvla.track import PoseTrack
@@ -45,6 +50,7 @@ def part_status(contacts: VideoContacts, on: PixelContact | None, part: BodyPart
     if regrip is not None:
         return f"regrip {regrip.target.label}"
     return "-"
+
 
 TEXT_COLOR = (255, 255, 255)
 NOBODY_COLOR = (0, 0, 255)  # red
@@ -69,12 +75,15 @@ def draw_frame(
     cleaned: CleanPose | None = None,
     route: VideoRoute | None = None,
     contacts: VideoContacts | None = None,
+    metrics: Series | None = None,
 ) -> np.ndarray:
     """One overlay frame: the skeleton (if any) and the time in the corner.
 
     With `cleaned`, the cleaned pose is drawn instead of the raw one.
     With `route` and `contacts` (step 2.9), the holds and the contacts active
     on this frame are drawn too, and listed in the corner.
+    With `metrics` (step 2.11, needs `contacts`), the center of mass is drawn
+    and the elbow angles listed.
     """
     if route is not None:
         image = draw_holds(image, route.holds, route.start_hold_ids, route.top_hold_id)
@@ -88,12 +97,21 @@ def draw_frame(
     t = float(track.t[row])
     if contacts is not None:
         out = draw_contacts(out, contacts.contacts, t)
+    if metrics is not None and contacts is not None:
+        out = draw_com(out, (float(metrics.com[row, 0]), float(metrics.com[row, 1])))
 
     lines = [(f"t = {t:.2f} s   frame {track.frame_index[row]}", TEXT_COLOR)]
     if contacts is not None:
         on = {c.body_part: c for c in contacts.contacts if c.t_start <= t < c.t_end}
         for part in PARTS:
             lines.append((f"{PART_LABELS[part]} {part_status(contacts, on.get(part), part, t)}", TEXT_COLOR))
+        if metrics is not None:
+            angles = "  ".join(
+                f"{PART_LABELS[h][0]} {metrics.elbow[h][row]:.0f}" if not np.isnan(metrics.elbow[h][row])
+                else f"{PART_LABELS[h][0]} ?"
+                for h in HANDS
+            )
+            lines.append((f"elbows {angles}", TEXT_COLOR))
     elif cleaned is not None:
         lines.append(("cleaned pose", TEXT_COLOR))
     if pose is None:
@@ -120,6 +138,7 @@ def write_overlay(
     cleaned: CleanPose | None = None,
     route: VideoRoute | None = None,
     contacts: VideoContacts | None = None,
+    metrics: Series | None = None,
 ) -> int:
     """Write the overlay video for the tracked frames. Returns the number of frames written.
 
@@ -146,7 +165,7 @@ def write_overlay(
             row = row_of.get(frame.index)
             if row is None:
                 continue  # this frame was skipped by the tracking (step > 1)
-            image = draw_frame(frame.image, track, row, cleaned, route, contacts)
+            image = draw_frame(frame.image, track, row, cleaned, route, contacts, metrics)
             if scale != 1:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
             writer.write(image)
@@ -174,7 +193,14 @@ def main() -> None:
         help="also draw the holds and contacts (step 2.9; implies --clean; "
         "reads <video>_route.json and <video>_contacts.json; default out: <video>_contacts.mp4)",
     )
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="also draw the center of mass and elbow angles (step 2.11; "
+        "implies --contacts; default out: <video>_metrics.mp4)",
+    )
     args = parser.parse_args()
+    args.contacts = args.contacts or args.metrics
 
     pose_path = args.pose or args.video.with_name(f"{args.video.stem}_pose.npz")
     track = PoseTrack.load(pose_path)
@@ -187,10 +213,17 @@ def main() -> None:
             args.video.with_name(f"{args.video.stem}_contacts.json").read_text()
         )
     cleaned = clean(track) if args.clean or args.contacts else None
-    suffix = "_contacts.mp4" if args.contacts else "_clean.mp4" if args.clean else "_overlay.mp4"
+    metrics = series(cleaned, contacts) if args.metrics else None
+    suffix = (
+        "_metrics.mp4" if args.metrics
+        else "_contacts.mp4" if args.contacts
+        else "_clean.mp4" if args.clean
+        else "_overlay.mp4"
+    )
     out = args.out or args.video.with_name(f"{args.video.stem}{suffix}")
     written = write_overlay(
-        args.video, track, out, scale=args.scale, cleaned=cleaned, route=route, contacts=contacts
+        args.video, track, out, scale=args.scale, cleaned=cleaned, route=route, contacts=contacts,
+        metrics=metrics,
     )
     print(f"wrote {out}: {written} frames")
 

@@ -201,3 +201,21 @@ def draw_contacts(image: np.ndarray, contacts: list[PixelContact], t: float) -> 
         label = f"{PART_SHORT.get(c.body_part.value, c.body_part.value)} {target}"
         _put_text(out, label, (center[0] + radius, center[1] + radius), scale * 0.8, CONTACT_COLORS[c.kind])
     return out
+
+
+# ---------- center of mass (step 2.11) ----------
+
+COM_COLOR = (255, 255, 255)
+
+
+def draw_com(image: np.ndarray, com: tuple[float, float]) -> np.ndarray:
+    """Return a copy of the image with the center of mass as a white dot
+    (unchanged if the COM is unknown)."""
+    out = image.copy()
+    if np.isnan(com[0]):
+        return out
+    scale = _text_scale(image)
+    center, radius = (round(com[0]), round(com[1])), round(12 * scale)
+    cv2.circle(out, center, radius + 3, (0, 0, 0), -1, cv2.LINE_AA)
+    cv2.circle(out, center, radius, COM_COLOR, -1, cv2.LINE_AA)
+    return out

@@ -103,14 +103,30 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
   of 0.1–0.3 s cover only 0.4–0.5 torso lengths (LH h8 → h4, RF h3 ↔ wall),
   likely a hand or foot sitting between two targets rather than a real move;
   2.13 will tell.
-- **2.11 Metrics:**
-  - angle-based, no scale needed: **straight-arm ratio** (share of loaded
-    frames with elbows near 180°) and **lock-off time** (time holding a bent
-    elbow under load);
-  - distance-based, in body units within one video: center-of-mass path and
-    its length relative to the direct path, **balance margin** (horizontal
-    distance of the center of mass from the line between the current
-    supports), smoothness (jerk) and hesitation time per move.
+- ✅ **2.11 Metrics** (`metrics.py`, saved as `VideoMetrics` in
+  `<video>_metrics.json`, one `PixelMoveMetrics` per move; `overlay --metrics`
+  draws the center of mass and lists the elbow angles). Each move is measured
+  over its *phase*: from the last contact change of any body part until it lands.
+  - angle-based, no scale needed: **straight-arm ratio** (share of on-hold
+    frames with the elbow open at least 150°) and **lock-off time** (a hand on
+    a hold with the elbow under 120° while the other hand is off the holds).
+    An elbow angle is left unknown when a segment looks shorter than 0.6 of
+    its usual length (pointing at the camera);
+  - distance-based, in body units within one video: center-of-mass path
+    (Winter's segment masses; a hidden limb's mass at its last known joint) and
+    its length relative to the direct path, **smoothness** as SPARC (spectral
+    arc length of the center-of-mass speed) instead of jerk, which changed with
+    the filter settings more than with the climbing (decided 2026-11-24), and
+    hesitation (still center of mass before the move leaves).
+  - First real video: straight-arm ratio 68%, lock-off 0 s, hesitation 6.9 s,
+    median SPARC -2.3 (one smooth push is about -1.4).
+  - **Balance margin moved to 2.14** (decided 2026-11-24): it was built here as
+    the sideways distance of the center of mass inside the span of the current
+    supports, then removed after watching the overlay. In pixels "sideways" can
+    only be the image's x: on the first real video that is mostly the distance
+    from the wall (start wall filmed from the side) or a mix of along and away
+    from the roof (overhang filmed from below), and the value jumped by one
+    torso length when a foot left the ground, with the body still.
 - **2.12 Command-line tool:** video + clicked holds → moves, metrics, overlay.
 - **2.13 Accuracy:** precision and recall of contacts against hand-labeled
   contacts, including false contacts from the side view. Also decides whether
@@ -120,7 +136,10 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
   keypoints (decided 2026-11-20).
 - **2.14 Pixels → wall-plane meters,** per wall panel, from clicked reference
   points (possibly the holds already clicked). Needed for metrics in meters,
-  for comparing two videos of the same route, and for steps 6–8.
+  for comparing two videos of the same route, and for steps 6–8. Adds the
+  **balance margin** (from 2.11), in wall coordinates, trusted only on roughly
+  frontal videos: the center of mass is off the wall plane, so a per-panel
+  mapping places it wrongly when the camera films from the side.
 
 *Done when:* a real video, with hand-clicked holds, produces a move list and
 metrics that look right on the overlay.

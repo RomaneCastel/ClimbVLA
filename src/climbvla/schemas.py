@@ -699,6 +699,40 @@ class Trajectory(BaseModel):
 Metrics = dict[str, float]
 
 
+class PixelMoveMetrics(BaseModel):
+    """The metrics of one PixelMove (step 2.11), in body units within one video.
+
+    The move is named by its body part and times, like in VideoContacts.moves,
+    so the two files can be matched without indexes. A metric that could not
+    be measured (for example an elbow angle while the arm was hidden) is left
+    out of `metrics`, never stored as NaN.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body_part: BodyPart
+    t_start: float = Field(ge=0, description="Seconds: when the body part left its contact.")
+    t_end: float = Field(ge=0, description="Seconds: when it landed on the next one.")
+    metrics: Metrics = Field(default_factory=dict)
+
+
+class VideoMetrics(BaseModel):
+    """The metrics of one climbing video, before any conversion to meters (step 2.11).
+
+    Distances are in torso lengths (`torso_px` pixels), so they compare within
+    one video, not across videos filmed from different places (that needs the
+    meters of step 2.14). Angles and times need no conversion.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    video: str = Field(min_length=1)
+    route_id: str = Field(min_length=1)
+    torso_px: float = Field(gt=0, description="The distance unit of every *_torso metric.")
+    climb: Metrics = Field(default_factory=dict, description="Whole-climb metrics.")
+    moves: list[PixelMoveMetrics] = Field(default_factory=list)
+
+
 class MoveAudit(BaseModel):
     """The analysis of one of the user's moves."""
 
