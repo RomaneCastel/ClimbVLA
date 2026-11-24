@@ -127,7 +127,13 @@ Works in image pixels (see §1). Sub-steps, ✅ = done:
     from the wall (start wall filmed from the side) or a mix of along and away
     from the roof (overhang filmed from below), and the value jumped by one
     torso length when a foot left the ground, with the body still.
-- **2.12 Command-line tool:** video + clicked holds → moves, metrics, overlay.
+- ✅ **2.12 Command-line tool** (`uv run climbvla climb.mp4`, `analyze.py`):
+  video → pose → holds → contacts and moves → metrics → overlay video, files
+  next to the video. The pose (the slow step) is reused unless the video is
+  newer or it was made by other models; missing holds open the clicking
+  window; the fast steps always run again, so they are never stale; the pose,
+  the holds and the video must have the same size. Robert's video: 10 s with
+  the saved pose, 3 min 27 s from scratch.
 - **2.13 Accuracy:** precision and recall of contacts against hand-labeled
   contacts, including false contacts from the side view. Also decides whether
   feet need toe keypoints: if foot contacts are clearly worse than hand

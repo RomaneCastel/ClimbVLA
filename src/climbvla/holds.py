@@ -216,6 +216,37 @@ def click_holds(image: np.ndarray) -> HoldClicker | None:
         cv2.waitKey(1)  # macOS needs one more event loop turn to really close it
 
 
+def click_route(
+    video: Path,
+    route_id: str,
+    t: float = 0.0,
+    color: str | None = None,
+    grade: str | None = None,
+    out: Path | None = None,
+    click=click_holds,
+) -> VideoRoute | None:
+    """Click the holds on the video's frame at `t` seconds and save the route.
+
+    Writes <video>_route.json (or `out`) and a .png next to it with the holds
+    drawn, to check. Returns None, saving nothing, if the user quit.
+    `click` is the clicking window; tests pass a fake one.
+    """
+    frame = next(iter_frames(video, start=t), None)
+    if frame is None:
+        raise ValueError(f"{video} has no frame at or after {t} s")
+    clicker = click(frame.image)
+    if clicker is None:
+        return None
+    route = clicker.to_video_route(route_id, video.name, frame.t, color=color, grade=grade)
+    out = out or video.with_name(f"{video.stem}_route.json")
+    out.write_text(route.model_dump_json(indent=2))
+    cv2.imwrite(
+        str(out.with_suffix(".png")),
+        draw_holds(frame.image, route.holds, route.start_hold_ids, route.top_hold_id),
+    )
+    return route
+
+
 # ---------- command line ----------
 
 
@@ -229,26 +260,16 @@ def main() -> None:
     parser.add_argument("--out", type=Path, help="output (default: <video>_route.json)")
     args = parser.parse_args()
 
-    frame = next(iter_frames(args.video, start=args.t), None)
-    if frame is None:
-        raise SystemExit(f"{args.video} has no frame at or after {args.t} s")
     print(__doc__.split("In the window,")[1])
-
-    clicker = click_holds(frame.image)
-    if clicker is None:
+    out = args.out or args.video.with_name(f"{args.video.stem}_route.json")
+    try:
+        route = click_route(args.video, args.route_id, args.t, args.color, args.grade, out)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    if route is None:
         print("quit: nothing saved")
         return
-
-    route = clicker.to_video_route(
-        args.route_id, args.video.name, frame.t, color=args.color, grade=args.grade
-    )
-    out = args.out or args.video.with_name(f"{args.video.stem}_route.json")
-    out.write_text(route.model_dump_json(indent=2))
-    preview = out.with_suffix(".png")
-    cv2.imwrite(
-        str(preview), draw_holds(frame.image, route.holds, route.start_hold_ids, route.top_hold_id)
-    )
-    print(f"wrote {out} ({len(route.holds)} holds) and {preview}")
+    print(f"wrote {out} ({len(route.holds)} holds) and {out.with_suffix('.png')}")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,21 @@ video, and builds a simulated reference climber that climbs the same route.
 It then compares the two and reports a **Beta Score**, with a breakdown for
 each move.
 
-> Early stage: the shared data format is being built. Nothing runs end to end yet.
+> Early stage: the climber-tracking half runs end to end (video → contacts,
+> moves, metrics). The reference climber and the Beta Score come later.
+
+## Try it
+
+```bash
+uv run climbvla climb.mp4
+```
+
+The first run finds the climber's skeleton on every frame (about 2 minutes
+for a 30-second video) and opens a window to click the route's holds. It then
+writes, next to the video: the contacts and moves (`climb_contacts.json` and a
+timeline `.png`), the metrics (`climb_metrics.json`) and a video with
+everything drawn on it (`climb_metrics.mp4`). Later runs reuse the skeleton
+and the holds and take seconds. `uv run climbvla --help` lists the options.
 
 ## The idea
 

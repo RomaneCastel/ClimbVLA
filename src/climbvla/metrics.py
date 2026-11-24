@@ -369,7 +369,7 @@ def compute_metrics(
 
 def print_tables(contacts: VideoContacts, result: VideoMetrics) -> None:
     def show(m: Metrics, name: str, fmt: str) -> str:
-        return format(m[name], fmt) if name in m else "-"
+        return format(m[name], fmt) if name in m else "-".rjust(int(fmt.split(".")[0]))
 
     print(f"{'part':4s} {'move':14s} {'t':>6s} {'air':>5s} {'phase':>5s} {'hesit':>5s} "
           f"{'path':>5s} {'ratio':>5s} {'sparc':>6s} {'straight':>8s} {'lockoff':>7s}")
